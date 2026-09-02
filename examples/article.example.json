@@ -1,0 +1,34 @@
+{
+  "title": "跑鞋周报｜这双缓震鞋值不值得现在入",
+  "author": "跑鞋碎片",
+  "digest": "参数、脚感、二级市场价格一次说清",
+  "unsourced_ok": ["2026", "9"],
+  "blocks": [
+    { "type": "p", "text": "这期只说一双，后台问得最多的那双缓震鞋，从参数到价格一次讲完，口径都写在文末。" },
+    { "type": "h2", "text": "一、先看参数" },
+    { "type": "p", "text": "男款 US9 单只 **288g**，后跟堆高 38mm，落差 10mm，落在常规缓震区间里，日常堆量够用。" },
+    { "type": "table",
+      "headers": ["项目", "参数", "来源"],
+      "rows": [["重量", "288g", "第三方实测"], ["后跟堆高", "38mm", "第三方实测"], ["落差", "10mm", "官方规格"]],
+      "caption": "单位已统一为公制，重量口径为男款 US9 单只" },
+    { "type": "img", "url": "https://mmbiz.qpic.cn/demo_side.png", "alt": "侧面图", "caption": "图：品牌官网产品图" },
+    { "type": "quote", "text": "一句话：稳妥的日常缓震款，不是竞速鞋。" },
+    { "type": "h2", "text": "二、价格怎么看" },
+    { "type": "p", "text": "得物主流配色集中在 780–860 元，联名和限定配色价格差太远，这里不放进来。" },
+    { "type": "table",
+      "headers": ["配色", "得物价", "采集日"],
+      "rows": [["黑白", "829元", "2026-08-30"], ["全黑", "845元", "2026-08-30"]],
+      "caption": "截至 2026-08-30 的页面显示价，随行就市" },
+    { "type": "img", "url": "https://mmbiz.qpic.cn/demo_price.png", "alt": "价格卡", "caption": "AI 生成示意图，非产品实拍" },
+    { "type": "hr" },
+    { "type": "p", "text": "价格随行就市，以上数据仅供参考，实际以平台页面为准。" },
+    { "type": "p", "text": "觉得有用点个赞，也欢迎在评论区说说你在穿哪双。" },
+    { "type": "sources", "title": "数据来源",
+      "items": [
+        { "title": "RunRepeat 实验室实测", "url": "https://runrepeat.com/x", "date": "2026-05-01" },
+        { "title": "Believe in the Run 评测", "url": "https://believeintherun.com/y", "date": "2026-05-02" },
+        { "title": "品牌官网规格页", "url": "https://brand.example.com/spec", "date": "2026-04-01" },
+        { "title": "得物商品页", "url": "https://www.dewu.com/spu/123", "date": "2026-08-30" }
+      ] }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "_note": "复制成 config.json 后按自己公众号改。config.json 不会进版本库。",
+  "account_name": "你的公众号名",
+  "assets_root": "/Volumes/你的移动盘/你的素材文件夹",
+  "columns": {
+    "跑鞋篇": { "album": "跑鞋" },
+    "篮球鞋篇": { "album": "球鞋" }
+  },
+  "footer": { "tester": "测评人姓名", "editor": "编辑姓名", "reviewers": "" },
+  "cover": {
+    "canvas": [2350, 1000],
+    "logo": "/Volumes/你的移动盘/你的素材文件夹/社标.png",
+    "logo_box": [0, 0, 1000, 1000],
+    "text_color": "#884b3f",
+    "font_en": ["Herculanum", "Regular"],
+    "font_cn": ["Xingkai SC", "Light"],
+    "shoe_height_ratio": 0.62
+  },
+  "highlight": { "positive": "rgb(95, 156, 239)", "negative": "rgb(249, 110, 87)" }
+}

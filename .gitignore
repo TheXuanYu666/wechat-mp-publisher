@@ -1,0 +1,21 @@
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 构建产物
+app/build/
+
+# 运行期临时文件
+tmp/
+*.log
+
+# 账号专属数据（公开仓库不含，私有仓库用 -f 强制加入）
+references/template_rdfz.json
+references/outline_running.json
+references/style_profile.json
+references/style_profile.md
+references/published.json
+references/candidates.json
+references/footer_defaults.json
+config.json

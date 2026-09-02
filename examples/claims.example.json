@@ -1,0 +1,61 @@
+{
+  "claims": [
+    {
+      "id": "c_weight",
+      "subject": "示例缓震鞋",
+      "metric": "重量",
+      "value": "288g",
+      "sources": [
+        { "title": "RunRepeat 实测", "url": "https://runrepeat.com/x", "quote": "Weight: 288g (10.2 oz) in men's US 9", "date": "2026-05-01" },
+        { "title": "Believe in the Run", "url": "https://believeintherun.com/y", "quote": "our US 9 came in at 288 g", "date": "2026-05-02" }
+      ]
+    },
+    {
+      "id": "c_stack",
+      "subject": "示例缓震鞋",
+      "metric": "后跟堆高",
+      "value": "38mm",
+      "sources": [
+        { "title": "RunRepeat 实测", "url": "https://runrepeat.com/x", "quote": "heel stack 38 mm", "date": "2026-05-01" },
+        { "title": "品牌官网规格", "url": "https://brand.example.com/spec", "quote": "后跟堆高 38 毫米", "date": "2026-04-01" }
+      ]
+    },
+    {
+      "id": "c_drop",
+      "subject": "示例缓震鞋",
+      "metric": "落差",
+      "value": "10mm",
+      "sources": [
+        { "title": "品牌官网规格", "url": "https://brand.example.com/spec", "quote": "落差 10 毫米", "date": "2026-04-01" },
+        { "title": "RunRepeat 实测", "url": "https://runrepeat.com/x", "quote": "drop: 10 mm", "date": "2026-05-01" }
+      ]
+    },
+    {
+      "id": "c_price_range",
+      "subject": "示例缓震鞋",
+      "metric": "得物二级市场价（主流配色区间）",
+      "value": "780–860元",
+      "sources": [
+        { "title": "得物商品页", "url": "https://www.dewu.com/spu/123", "quote": "主流配色 780 元起，最高 860 元", "date": "2026-08-30" }
+      ]
+    },
+    {
+      "id": "c_price_bw",
+      "subject": "示例缓震鞋",
+      "metric": "得物二级市场价（黑白）",
+      "value": "829元",
+      "sources": [
+        { "title": "得物商品页", "url": "https://www.dewu.com/spu/123", "quote": "¥829 起", "date": "2026-08-30" }
+      ]
+    },
+    {
+      "id": "c_price_black",
+      "subject": "示例缓震鞋",
+      "metric": "得物二级市场价（全黑）",
+      "value": "845元",
+      "sources": [
+        { "title": "得物商品页", "url": "https://www.dewu.com/spu/456", "quote": "¥845 起", "date": "2026-08-30" }
+      ]
+    }
+  ]
+}

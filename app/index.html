@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>步界社 · 公众号生成器</title>
+<link rel="icon" href="/favicon.ico"/>
+<style>
+  :root{ --g:#1f9275; --g2:#7edaa7; --orange:#f96e57; --ink:#423e3e; --line:#e6e6e6; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:15px/1.7 -apple-system,"PingFang SC",sans-serif; color:var(--ink);
+        background:linear-gradient(#def7e2,#cceed9,#b8ede1); min-height:100vh; }
+  header{ display:flex; align-items:center; gap:14px; padding:16px 26px; background:rgba(255,255,255,.72); }
+  header img{ width:38px; height:38px; border-radius:8px; object-fit:contain; background:#fff; }
+  header h1{ font-size:17px; margin:0; color:var(--g); letter-spacing:1px; }
+  header .sub{ font-size:12px; color:#999; }
+  main{ max-width:860px; margin:20px auto 50px; padding:0 20px; }
+  .dots{ display:flex; gap:8px; justify-content:center; margin-bottom:18px; }
+  .dot{ width:9px; height:9px; border-radius:50%; background:#fff; opacity:.55; }
+  .dot.on{ opacity:1; background:var(--g); transform:scale(1.25); }
+  .page{ background:rgba(255,255,255,.88); border-radius:14px; padding:26px 28px;
+         animation:in .3s ease; display:none; }
+  .page.on{ display:block; }
+  @keyframes in{ from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
+  h2{ font-size:17px; color:var(--g); margin:0 0 4px; }
+  .lead{ font-size:13px; color:#999; margin:0 0 18px; }
+  .cands{ display:grid; gap:12px; }
+  .cand{ display:flex; align-items:center; gap:14px; border:2px solid var(--line); border-radius:10px;
+         padding:14px 16px; background:#fff; cursor:pointer; transition:.15s; }
+  .cand:hover{ border-color:var(--g2); }
+  .cand.sel{ border-color:var(--g); background:#f4fbf7; }
+  .cand .nm{ font-weight:bold; }
+  .cand .cl{ font-size:12px; color:var(--g); background:#eaf7f1; padding:2px 8px; border-radius:20px; }
+  .cand .why{ font-size:13px; color:#888; }
+  .cand .no{ font-size:12px; color:var(--orange); }
+  .row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  input[type=text]{ font:17px inherit; padding:11px 14px; border:1px solid var(--line);
+        border-radius:9px; width:140px; background:#fff; text-align:center; }
+  .slots{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .slot{ border:2px dashed #cfd8d4; border-radius:10px; background:#fff; text-align:center;
+         padding:10px; cursor:pointer; transition:.15s; }
+  .slot:hover,.slot.over{ border-color:var(--g); background:#f4fbf7; }
+  .slot .plus{ font-size:34px; color:#cfd8d4; line-height:1.25; }
+  .slot.filled .plus{ display:none; }
+  .slot img{ width:100%; height:100px; object-fit:contain; display:none; }
+  .slot.filled img{ display:block; }
+  .slot .cap{ font-size:13px; color:#666; margin-top:6px; }
+  .slot .sec{ font-size:11px; color:#aaa; }
+  .nav{ display:flex; justify-content:space-between; margin-top:22px; }
+  button{ font:15px inherit; padding:10px 24px; border:0; border-radius:9px; background:var(--g);
+          color:#fff; cursor:pointer; }
+  button.ghost{ background:#fff; color:var(--g); border:1px solid var(--g); }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  .log{ font:13px/1.85 ui-monospace,monospace; background:#fbfdfc; border:1px solid var(--line);
+        border-radius:9px; padding:12px 14px; max-height:250px; overflow:auto; }
+  .ok{ color:var(--g); } .bad{ color:var(--orange); }
+  .bar{ height:6px; background:#e8f2ec; border-radius:3px; overflow:hidden; margin:14px 0 8px; }
+  .bar i{ display:block; height:100%; width:0; background:linear-gradient(90deg,var(--g),var(--g2));
+          transition:width .45s; }
+  .spin{ display:inline-block; width:13px; height:13px; border:2px solid #cfe6dc;
+         border-top-color:var(--g); border-radius:50%; animation:r .7s linear infinite; }
+  @keyframes r{ to{ transform:rotate(360deg); } }
+  #mask{ position:fixed; inset:0; background:rgba(255,255,255,.5); display:none; z-index:9;
+         cursor:progress; }
+  #mask.on{ display:block; }
+  iframe{ width:100%; height:560px; border:1px solid var(--line); border-radius:9px;
+          background:#fff; margin-top:14px; }
+  .warn{ background:#fff7f4; border-left:3px solid var(--orange); padding:10px 12px;
+         border-radius:6px; font-size:13px; margin-bottom:14px; }
+  .hint{ font-size:13px; color:#999; }
+</style>
+</head>
+<body>
+<div id="mask"></div>
+<header>
+  <img src="/logo.png" alt="步界社"/>
+  <div><h1>步界社 · 公众号生成器</h1><div class="sub">跑鞋 / 篮球鞋测评 · 自动排版与草稿</div></div>
+</header>
+
+<main>
+  <div class="dots"><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+
+  <!-- 1 选鞋 -->
+  <section class="page on" id="pg1">
+    <h2>选一双要测评的鞋</h2>
+    <p class="lead" id="lead1">正在搜索最近比较火的鞋…</p>
+    <div id="problems"></div>
+    <div class="bar" id="sbarWrap"><i id="sbar"></i></div>
+    <div class="hint" id="smsg" style="margin-bottom:14px"><span class="spin"></span> 启动搜索…</div>
+    <div class="cands" id="cands"></div>
+    <div class="bar" id="wbarWrap" style="display:none"><i id="wbar"></i></div>
+    <div class="hint" id="wmsg" style="display:none"></div>
+    <div class="nav">
+      <button class="ghost" id="research">重新搜索</button>
+      <button id="n1" disabled>下一步</button>
+    </div>
+  </section>
+
+  <!-- 2 价格 -->
+  <section class="page" id="pg2">
+    <h2>二级市场价格区间</h2>
+    <p class="lead">得物主流配色区间，联名与限定不计入。只填数字。</p>
+    <div class="row">
+      <span style="font-size:17px">¥</span><input type="text" id="low" placeholder="低价" inputmode="numeric"/>
+      <span style="font-size:17px">～ ¥</span><input type="text" id="high" placeholder="高价" inputmode="numeric"/>
+    </div>
+    <h2 style="margin-top:22px">发布日期</h2>
+    <p class="lead">写进文末的「发布日期：YYYY年M月D日」。</p>
+    <div class="row">
+      <input type="date" id="pubdate" style="width:170px;text-align:left"/>
+    </div>
+    <div class="nav"><button class="ghost" data-back="1">上一步</button><button id="n2" disabled>下一步</button></div>
+  </section>
+
+  <!-- 3 图片 -->
+  <section class="page" id="pg3">
+    <h2>拖入四张图片</h2>
+    <p class="lead">顺序对应文章的 01–04 四个章节。点击方框也能选文件。</p>
+    <div class="slots" id="slots"></div>
+    <div class="nav"><button class="ghost" data-back="2">上一步</button><button id="n3" disabled>下一步</button></div>
+  </section>
+
+  <!-- 4 封面 -->
+  <section class="page" id="pg4">
+    <h2>生成封面</h2>
+    <p class="lead">用第一张图（侧视图）自动去底，配社标与鞋名，画布 2350×1000。</p>
+    <div class="row">
+      <button id="mkcover">生成封面</button>
+      <span class="hint" id="coverMsg"></span>
+    </div>
+    <img id="coverImg" style="display:none;width:100%;margin-top:14px;border:1px solid var(--line);border-radius:9px"/>
+    <div class="nav"><button class="ghost" data-back="3">上一步</button>
+      <button id="n4" disabled>下一步</button></div>
+  </section>
+
+  <!-- 5 生成 -->
+  <section class="page" id="pg5">
+    <h2>生成文章</h2>
+    <p class="lead" id="summary">—</p>
+    <div class="hint" id="genNote" style="margin:-8px 0 14px"></div>
+    <div class="row">
+      <button id="go">开始生成</button>
+      <button id="draft" class="ghost" disabled>保存到公众号草稿</button>
+    </div>
+    <div class="bar"><i id="bar"></i></div>
+    <div id="fillBox" class="warn" style="display:none">
+      <b>有信息网上没搜到，需要你补一下：</b>
+      <div id="fillList" style="margin:10px 0"></div>
+      <button id="fillGo">填好了，继续生成</button>
+    </div>
+    <div class="log" id="log">等待开始。</div>
+    <iframe id="preview" style="display:none"></iframe>
+    <div class="nav"><button class="ghost" data-back="4">上一步</button><span></span></div>
+  </section>
+</main>
+
+<script>
+const $=s=>document.querySelector(s), mask=$('#mask');
+let images={}, picked=null, cands=[], slots=[], ready=false, cur=1;
+
+function show(n){ cur=n;
+  [1,2,3,4,5].forEach(i=>$('#pg'+i).classList.toggle('on', i===n));
+  document.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('on', i===n-1));
+  if(n===5){ $('#summary').textContent =
+    picked.name+'　|　¥'+$('#low').value.trim()+'～¥'+$('#high').value.trim()+'　|　4 张图片';
+    $('#genNote').textContent = picked.has_article
+      ? '稿件已就绪，点开始生成会直接排版。'
+      : '这双还没有稿件，点开始生成会先自动写稿（约十分钟），再排版。'; }
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>show(+b.dataset.back));
+
+function log(m,c){ const d=document.createElement('div'); if(c) d.className=c; d.innerHTML=m;
+  $('#log').appendChild(d); $('#log').scrollTop=$('#log').scrollHeight; }
+function lock(on){ mask.classList.toggle('on',on);
+  document.querySelectorAll('input,button').forEach(e=>e.disabled=on); if(!on) sync(); }
+function sync(){
+  $('#n1').disabled = !picked;
+  const okp = /^\d+$/.test($('#low').value.trim()) && /^\d+$/.test($('#high').value.trim())
+              && +$('#low').value.trim() <= +$('#high').value.trim()
+              && !!$('#pubdate').value;
+  $('#n2').disabled = !okp;
+  $('#n3').disabled = Object.keys(images).length!==4;
+  if($('#coverImg').style.display==='block') $('#n4').disabled=false;
+  $('#go').disabled = !ready || !picked;
+  $('#draft').disabled = $('#preview').style.display==='none';
+}
+
+fetch('/api/context').then(r=>r.json()).then(c=>{
+  slots=c.slots; ready=!(c.problems||[]).length;
+  if(!ready) $('#problems').innerHTML='<div class="warn"><b>环境有问题：</b><br>'+
+      c.problems.map(x=>'· '+x).join('<br>')+'</div>';
+  const box=$('#slots');
+  slots.forEach(s=>{
+    const d=document.createElement('div'); d.className='slot'; d.dataset.num=s.num;
+    d.innerHTML='<div class="plus">＋</div><img/><div class="cap">'+s.label+
+                '</div><div class="sec">'+s.num+' '+s.section+'</div>';
+    const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+    inp.style.display='none'; d.appendChild(inp);
+    d.onclick=()=>inp.click();
+    inp.onchange=e=>{ if(e.target.files[0]) take(d,e.target.files[0]); };
+    ['dragenter','dragover'].forEach(t=>d.addEventListener(t,e=>{e.preventDefault();d.classList.add('over');}));
+    ['dragleave','drop'].forEach(t=>d.addEventListener(t,e=>{e.preventDefault();d.classList.remove('over');}));
+    d.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) take(d,f); });
+    box.appendChild(d);
+  });
+  sync();
+});
+
+function renderCands(d){
+  cands=d.candidates||[]; const box=$('#cands'); box.innerHTML='';
+  $('#lead1').textContent = '最近比较火的候选（热度依据 RunRepeat 人气榜，已剔除写过的）· 更新于 '+(d.updated||'—');
+  if(!cands.length){ box.innerHTML='<div class="hint">没搜到候选，点「重新搜索」再试。</div>'; return; }
+  cands.forEach(c=>{
+    const el=document.createElement('div'); el.className='cand';
+    el.innerHTML='<span class="nm">'+c.name+'</span><span class="cl">'+(c.column||'')+'</span>'+
+      '<span class="why">'+(c.hot||'')+'</span>'+
+      (c.has_article?'<span class="ok" style="font-size:12px">已有稿件</span>'
+        :'');
+    el.onclick=()=>{ document.querySelectorAll('.cand').forEach(x=>x.classList.remove('sel'));
+      el.classList.add('sel'); picked=c; sync(); };
+    box.appendChild(el);
+  });
+}
+
+async function runSearch(){
+  picked=null; $('#cands').innerHTML=''; sync();
+  $('#sbarWrap').style.display='block'; $('#smsg').style.display='block';
+  $('#sbar').style.width='4%';
+  $('#smsg').innerHTML='<span class="spin"></span> 启动搜索…';
+  $('#research').disabled=true;
+  try{ await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }
+  catch(e){ $('#smsg').innerHTML='<span class="bad">搜索启动失败：'+e+'</span>'; $('#research').disabled=false; return; }
+  const poll=setInterval(async()=>{
+    let st; try{ st=await (await fetch('/api/search/status')).json(); }catch(e){ return; }
+    $('#sbar').style.width=Math.max(4,st.pct)+'%';
+    $('#smsg').innerHTML = st.done
+      ? (st.error? '<span class="bad">'+st.error+'</span>' : '<span class="ok">✅ 搜索完成</span>')
+      : '<span class="spin"></span> '+st.msg;
+    if(st.done){
+      clearInterval(poll); $('#research').disabled=false;
+      const d=await (await fetch('/api/candidates')).json();
+      renderCands(d);
+      setTimeout(()=>{ $('#sbarWrap').style.display='none'; $('#smsg').style.display='none'; }, 1200);
+    }
+  }, 600);
+}
+$('#research').onclick=runSearch;
+runSearch();
+
+$('#n1').onclick=()=>show(2);
+$('#n2').onclick=()=>show(3);
+$('#n3').onclick=()=>show(4);
+
+$('#mkcover').onclick=async ()=>{
+  lock(true); $('#coverMsg').innerHTML='<span class="spin"></span> 生成中…';
+  try{
+    const j=await (await fetch('/api/cover',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({shoe:picked.name, images:[images['01']]})})).json();
+    if(j.status==='ok'){
+      $('#coverMsg').innerHTML='<span class="ok">✅ 已生成，可继续</span>';
+      $('#coverImg').style.display='block';
+      $('#coverImg').src='/api/cover/preview?t='+Date.now();
+      $('#n4').disabled=false;
+    }else{
+      $('#coverMsg').innerHTML='<span class="bad">'+(j.error||JSON.stringify(j))+'</span>';
+    }
+  }catch(e){ $('#coverMsg').innerHTML='<span class="bad">'+e+'</span>'; }
+  lock(false);
+};
+$('#n4').onclick=()=>show(5);
+['low','high','pubdate'].forEach(id=>$('#'+id).addEventListener('input',sync));
+$('#pubdate').value = new Date(Date.now()+864e5).toISOString().slice(0,10);
+
+function take(el,file){ const fr=new FileReader();
+  fr.onload=()=>{ el.querySelector('img').src=fr.result; el.classList.add('filled');
+    images[el.dataset.num]={slot:el.dataset.num,name:file.name,data:fr.result}; sync(); };
+  fr.readAsDataURL(file); }
+
+async function startGenerate(fills){
+  $('#log').innerHTML=''; $('#bar').style.width='3%'; lock(true);
+  $('#fillBox').style.display='none';
+  let shown=0;
+  log('<span class="spin"></span> 开始生成，界面已锁定，避免误触。');
+  if(!picked.has_article) log('这双还没有稿件，会先搜数据写稿，大约需要十分钟。','hint');
+  try{
+    await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({shoe:picked.name,column:picked.column,
+        low:$('#low').value.trim(),high:$('#high').value.trim(),
+        date:$('#pubdate').value, images:Object.values(images), fills:fills||{}})});
+  }catch(e){ log('❌ 启动失败：'+e,'bad'); lock(false); return; }
+
+  const poll=setInterval(async()=>{
+    let st; try{ st=await (await fetch('/api/generate/status')).json(); }catch(e){ return; }
+    $('#bar').style.width=Math.max(3,st.pct)+'%';
+    while(shown < (st.steps||[]).length){
+      const s2=st.steps[shown++];
+      log((s2.ok?'✅ ':'❌ ')+s2.name+(s2.detail?'　<span style="color:#999">'+
+        (typeof s2.detail==='string'?s2.detail:JSON.stringify(s2.detail))+'</span>':''),
+        s2.ok?'ok':'bad');
+    }
+    if(!st.done && st.stage) $('#genNote').innerHTML='<span class="spin"></span> '+st.stage;
+    if(st.done){
+      clearInterval(poll); $('#genNote').textContent='';
+      if((st.need_fields||[]).length){
+        const box=$('#fillList'); box.innerHTML='';
+        st.need_fields.forEach(f=>{
+          const row=document.createElement('div'); row.style.margin='6px 0';
+          row.innerHTML='<label style="display:inline-block;width:110px">'+f.label+
+            '</label><input type="text" data-label="'+f.label+
+            '" placeholder="例如 ¥1099" style="width:220px;text-align:left"/>';
+          box.appendChild(row);
+        });
+        $('#fillBox').style.display='block';
+        log('填好上面的信息后点「填好了，继续生成」。','hint');
+      }
+      else if(st.error) log('❌ '+st.error,'bad');
+      else if(st.ok){ log('<b class="ok">生成完成。</b>');
+        picked.has_article=true;
+        $('#preview').style.display='block'; $('#preview').src='/api/preview?t='+Date.now(); }
+      else log('<b class="bad">生成中断，按上面失败项处理后重试。</b>');
+      lock(false);
+    }
+  }, 900);
+}
+
+$('#fillGo').onclick=()=>{
+  const fills={};
+  document.querySelectorAll('#fillList input').forEach(i=>{
+    if(i.value.trim()) fills[i.dataset.label]=i.value.trim();
+  });
+  if(!Object.keys(fills).length){ alert('先填一下再继续'); return; }
+  startGenerate(fills);
+};
+
+$('#go').onclick=()=>startGenerate(null);
+
+$('#draft').onclick=async ()=>{
+  lock(true);
+  log('<span class="spin"></span> 正在写入草稿…');
+  try{
+    await fetch('/api/draft',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  }catch(e){ log('❌ 启动失败：'+e,'bad'); lock(false); return; }
+  let lastStage='';
+  const poll=setInterval(async()=>{
+    let st; try{ st=await (await fetch('/api/draft/status')).json(); }catch(e){ return; }
+    if(st.stage && st.stage!==lastStage && !st.done){
+      lastStage=st.stage; log('<span class="spin"></span> '+st.stage);
+    }
+    if(st.done){
+      clearInterval(poll);
+      if(st.ok){
+        log('<b class="ok">✅ 草稿已保存。</b>','ok');
+        log('封面、合集、原创声明、创作来源都已自动设置，去后台点发表即可。','hint');
+      }else{
+        log('⚠️ '+(st.error||'未完成')+'　去草稿箱看最新一条，内容通常已经存上了。','bad');
+      }
+      lock(false);
+    }
+  }, 1500);
+};
+</script>
+</body>
+</html>
