@@ -110,6 +110,27 @@ def wait_login(page, timeout: int = 300) -> str:
     raise RuntimeError("等待登录超时：请在浏览器里扫码登录公众号后台后重试")
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    """快速检查登录态是否还有效，不弹窗。"""
+    sp = need_playwright()
+    ok, token = False, ""
+    try:
+        with profile_lock(timeout=60), sp() as pw:
+            ctx = open_ctx(pw, headless=True)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                token = wait_login(page, args.timeout)
+                ok = bool(token)
+            except Exception:  # noqa: BLE001
+                ok = False
+            ctx.close()
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"logged_in": False, "error": str(exc)[:120]}, ensure_ascii=False))
+        return 1
+    print(json.dumps({"logged_in": ok, "token": token}, ensure_ascii=False))
+    return 0 if ok else 1
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     sp = need_playwright()
     with profile_lock(), sp() as pw:
@@ -595,6 +616,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="公众号草稿推送")
     ap.add_argument("--timeout", type=int, default=300, help="等待扫码登录秒数")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    ck = sub.add_parser("check", help="检查登录态是否有效（不弹窗）")
+    ck.set_defaults(func=cmd_check)
 
     lg = sub.add_parser("login", help="首次扫码登录并缓存登录态")
     lg.set_defaults(func=cmd_login)

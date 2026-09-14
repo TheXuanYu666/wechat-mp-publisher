@@ -51,6 +51,25 @@ NEG_WORDS = re.compile(r"(不足|偏薄|偏重|偏窄|衰减|不如|短板|不�
                        r"表现一般|性能一般|比较一般|都一般|只是一般|一般$)")
 POS_WORDS = re.compile(r"(出色|优秀|扎实|到位|稳固|稳定|省劲|舒适|好过|提升|友好|轻松|够用|"
                        r"清晰|规整|不错|明显好)")
+# 用于发现未着色的明确评价。重点覆盖“没有多余堆料、不生硬、不拖脚”等否定式优点，
+# 以及包裹、支撑、做工、抓地、耐磨等高置信度评价；只在 02–05 测评正文中使用。
+CLEAR_POSITIVE_RX = re.compile(
+    r"((?:没有|不会|不再|未出现|无)[^，。；]{0,10}(?:多余堆料|突兀(?:的)?硬边|打滑|乱晃|"
+    r"拖脚|拖重量|压迫|磨脚|生硬|松散)|不(?:生硬|拖脚|拖重量|乱晃|费劲)|"
+    r"(?:压力分布|受力)(?:很|更|比较|较)?均匀|(?:包裹|活动|转换|过渡)(?:很|更|比较|较)?自然|"
+    r"(?:处理|接合|做工)[^，。；]{0,10}(?:干净|细致)|(?:扎实|稳定|可靠|充足)的?(?:承托|支撑|保护|锁定)|"
+    r"(?:抓地|制动)(?:很|更|比较|较)?(?:直接|可靠|稳定)|(?:完成度|保护性|耐用感)[^，。；]{0,6}(?:高|不错|出色)|"
+    r"(?:抗磨|耐磨)[^，。；]{0,8}(?:较好|扎实|耐用))"
+)
+CLEAR_NEGATIVE_RX = re.compile(
+    r"((?:鞋舌|鞋头|鞋楦|鞋身)[^，。；]{0,8}(?:偏薄|偏重|偏窄)|"
+    r"(?:通风|透气|填充|反馈|利落感|灵巧)[^，。；]{0,8}(?:不够|不足|有限|偏少|不算充分)|"
+    r"容易积热|轻微空量感|不够锐利|不够灵巧)"
+)
+SOURCE_META_RX = re.compile(
+    r"(现有资料|公开资料|资料不足|检索|搜索|查不到|没查到|没有查到|不硬写数字|"
+    r"无法给出(?:可靠的)?(?:具体)?数据|可以确认的是)"
+)
 # 否定式：「没有打滑」「不累脚」这类是优点，不能按负面词判
 NEGATION_RX = re.compile(r"(没有|不会|不再|未出现|无|不)\s*([\u4e00-\u9fff]{1,4})")
 
@@ -106,16 +125,18 @@ def main(argv: list[str] | None = None) -> int:
             blocking.append(f"[{loc}] 出现同价位/同类横向比较，只说这双鞋本身：{t[:44]}")
         if EXTERNAL_RX.search(t):
             blocking.append(f"[{loc}] 正文提到了外部机构/网站，应删掉直接给结论：{t[:44]}")
+        if SOURCE_META_RX.search(t):
+            blocking.append(f"[{loc}] 正文描述了资料搜集或写作过程，来源只应留在 claims.json：{t[:52]}")
         if ABSOLUTE_RX.search(t):
             warn.append(f"[{loc}] 绝对化表述：{t[:50]}")
 
     # 3 标色语义与密度
     pos = POS_RX.findall(body)
     neg = NEG_RX.findall(body)
-    if not 18 <= len(pos) <= 42:
-        warn.append(f"蓝色（优点）标注 {len(pos)} 处，历史约 30 处")
-    if not 6 <= len(neg) <= 18:
-        warn.append(f"橙色（缺点）标注 {len(neg)} 处，历史约 10 处")
+    if len(pos) < 24:
+        warn.append(f"蓝色（优点）标注只有 {len(pos)} 处，可能仍有明确优点漏标")
+    if len(neg) < 6:
+        warn.append(f"橙色（缺点）标注只有 {len(neg)} 处，可能仍有明确缺点漏标")
     for p in pos:
         q = strip_negation(p)
         if NEG_WORDS.search(q) and not POS_WORDS.search(q):
@@ -124,6 +145,40 @@ def main(argv: list[str] | None = None) -> int:
         q = strip_negation(n)
         if POS_WORDS.search(q) and not NEG_WORDS.search(q):
             blocking.append(f"标橙的是正面表述，应改成蓝色：「{n[:28]}」")
+
+    # 3.5 逐段检查：不能靠全篇总数掩盖某些段落完全漏标。
+    # 02–04 都是测评正文；05 的尺码建议是中性信息，其余是评价内容。
+    for sec in a.get("sections", []):
+        num = str(sec.get("num", "")).zfill(2)
+        if num not in ("02", "03", "04", "05"):
+            continue
+        for bi, b in enumerate(sec.get("blocks", [])):
+            rows: list[str] = []
+            if num in ("02", "03", "04") and b.get("type") == "p" and b.get("text"):
+                rows = [str(b["text"])]
+            elif num == "05" and b.get("type") in ("p", "lines"):
+                if b.get("text"):
+                    rows.append(str(b["text"]))
+                rows.extend(str(x) for x in b.get("items", []))
+            for ri, row in enumerate(rows):
+                if row.lstrip().startswith("尺码建议"):
+                    continue
+                marked = len(POS_RX.findall(row)) + len(NEG_RX.findall(row))
+                where = f"[{num}{sec.get('title')} block {bi}.{ri}]"
+                if marked < 2:
+                    blocking.append(
+                        f"{where} 评价段只标色 {marked} 处，至少应标出 2 个明确优缺点短语：{row[:52]}"
+                    )
+
+                # 已标色范围先移除，再找仍裸露的高置信度评价，避免只凑够数量却漏掉明确优缺点。
+                plain = POS_RX.sub(" ", NEG_RX.sub(" ", row))
+                plain = re.sub(r"^\s*(?:\d+[.、．]\s*)?[^：:]{1,20}[：:]", "", plain)
+                missed_pos = list(dict.fromkeys(m.group(0) for m in CLEAR_POSITIVE_RX.finditer(plain)))
+                missed_neg = list(dict.fromkeys(m.group(0) for m in CLEAR_NEGATIVE_RX.finditer(plain)))
+                if missed_pos:
+                    blocking.append(f"{where} 明确优点未标蓝：{missed_pos}")
+                if missed_neg:
+                    blocking.append(f"{where} 明确缺点未标橙：{missed_neg}")
 
     # 4 型号名要带品牌
     for m in MODELS:

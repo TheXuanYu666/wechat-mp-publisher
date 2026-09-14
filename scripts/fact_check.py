@@ -69,6 +69,8 @@ def norm_num(s: str) -> str:
 
 # 前置货币符号：¥999 / ￥899 / $120 —— 与「999元」等价对待
 CUR_PREFIX_RX = re.compile(r"[¥￥$]\s*(\d+(?:\.\d+)?)")
+FOREIGN_CURRENCY_RX = re.compile(r"(?:US\s*\$|USD|美元|美金|\$)", re.I)
+RMB_CURRENCY_RX = re.compile(r"(?:¥|￥|人民币|\d\s*元)")
 
 
 def numbers_in(text: str) -> tuple[set[str], set[tuple[str, str]]]:
@@ -163,6 +165,23 @@ def validate_claims(claims: list[dict], min_sources: int) -> tuple[list[Issue], 
                 Issue("warning", "missing_subject_metric", f"{cid} 缺少 subject/metric", claim=cid)
             )
 
+        is_launch_price = "发售价" in metric or (
+            "官方" in metric and ("售价" in metric or "定价" in metric)
+        )
+        if is_launch_price:
+            if FOREIGN_CURRENCY_RX.search(value):
+                issues.append(Issue(
+                    "blocking", "foreign_launch_price",
+                    f"{cid} 官方发售价必须使用中国大陆人民币价格，不能写美元：{value}",
+                    claim=cid,
+                ))
+            elif (re.search(r"\d", value) and not RMB_CURRENCY_RX.search(value)
+                  and not re.search(r"待补|待填|待定|TODO", value, re.I)):
+                issues.append(Issue(
+                    "blocking", "launch_price_not_rmb",
+                    f"{cid} 官方发售价没有明确标为人民币：{value}", claim=cid,
+                ))
+
         bare, united = numbers_in(value)
         is_numeric = bool(bare or united)
         covered["numbers"] |= bare
@@ -219,6 +238,12 @@ def validate_claims(claims: list[dict], min_sources: int) -> tuple[list[Issue], 
                           claim=cid, url=url)
                 )
                 continue
+            if is_launch_price and FOREIGN_CURRENCY_RX.search(quote):
+                issues.append(Issue(
+                    "blocking", "foreign_launch_price_source",
+                    f"{cid} 的发售价来源是美元口径，必须改用中国大陆人民币价格来源",
+                    claim=cid, url=url, quote=quote[:160],
+                ))
             if is_numeric:
                 qbare, qunited = numbers_in(quote)
                 qnums = qbare | {n for n, _ in qunited}
@@ -325,6 +350,28 @@ def check_coverage(article: dict, covered: dict[str, set[str]], allow: set[str])
     return issues
 
 
+def check_launch_price_currency(article: dict) -> list[Issue]:
+    """开篇官方发售价只能是中国大陆人民币价格。"""
+    issues: list[Issue] = []
+    for loc, text in collect_article_text(article):
+        if "官方发售价" not in text:
+            continue
+        if FOREIGN_CURRENCY_RX.search(text):
+            issues.append(Issue(
+                "blocking", "foreign_launch_price_in_article",
+                f"{loc} 官方发售价使用了美元，必须改为中国大陆人民币首发价",
+                location=loc, snippet=text[:120],
+            ))
+        elif (re.search(r"\d", text) and not RMB_CURRENCY_RX.search(text)
+              and not re.search(r"待补|待填|待定|TODO", text, re.I)):
+            issues.append(Issue(
+                "blocking", "launch_price_not_rmb_in_article",
+                f"{loc} 官方发售价没有明确标为人民币",
+                location=loc, snippet=text[:120],
+            ))
+    return issues
+
+
 def check_hedging(article: dict) -> list[Issue]:
     """绝对化表述提示。"""
     issues: list[Issue] = []
@@ -364,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
 
     issues, covered = validate_claims(claims, args.min_sources)
     issues += check_coverage(article, covered, allow)
+    issues += check_launch_price_currency(article)
     issues += check_hedging(article)
 
     blocking = [i for i in issues if i["severity"] == "blocking"]

@@ -10,7 +10,7 @@ app/build/
 tmp/
 *.log
 
-# 账号专属数据（公开仓库不含，私有仓库用 -f 强制加入）
+# 账号专属数据（任何远程仓库都不上传；请只保留在本机）
 references/template_rdfz.json
 references/outline_running.json
 references/style_profile.json

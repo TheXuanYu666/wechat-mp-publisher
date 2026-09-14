@@ -33,6 +33,14 @@ SCRIPTS = SKILL / "scripts"
 PY = SKILL / ".venv" / "bin" / "python"
 TEMPLATE = SKILL / "references" / "template_rdfz.json"
 OUTLINE = SKILL / "references" / "outline_running.json"
+OUTLINE_BB = SKILL / "references" / "outline_basketball.json"
+
+
+def outline_for(column: str) -> Path:
+    """跑鞋和篮球鞋骨架不同，校验和渲染都要用对应那份。"""
+    if ("篮球" in (column or "") or "球鞋" in (column or "")) and OUTLINE_BB.exists():
+        return OUTLINE_BB
+    return OUTLINE
 CANDS = SKILL / "references" / "candidates.json"
 sys.path.insert(0, str(SKILL))
 from config import CFG, assets_root  # noqa: E402
@@ -81,8 +89,9 @@ def tail_json(text: str) -> dict[str, Any]:
 class Pipeline:
     """把价格与图片写进 article.json，再跑核查与渲染。"""
 
-    def __init__(self, workdir: Path):
+    def __init__(self, workdir: Path, column: str = ""):
         self.d = workdir
+        self.column = column
         self.article = workdir / "article.json"
         self.claims = workdir / "claims.json"
         self.html = workdir / "article.html"
@@ -130,21 +139,77 @@ class Pipeline:
 
     MISSING_RX = re.compile(r"(待补|待定|待填|TODO)")
 
+    @staticmethod
+    def normalize_fill_value(label: str, value: str) -> tuple[str, str]:
+        """规范化 App 手填值；返回 (规范值, 错误)。"""
+        value = str(value or "").strip()
+        if not value:
+            return "", f"{label}不能为空"
+        if label != "官方发售价":
+            return value, ""
+
+        if re.search(r"(?:US\s*\$|USD|美元|美金|\$)", value, re.I):
+            return "", "官方发售价必须是中国大陆人民币价格；只写数字即可，例如 1490"
+        compact = re.sub(r"[\s,，]", "", value)
+        m = re.fullmatch(r"(?:人民币)?[¥￥]?(\d{2,5})(?:元)?", compact)
+        if not m:
+            return "", "官方发售价格式不对；只写数字即可，例如 1490（会自动变成 ¥1490）"
+        amount = int(m.group(1))
+        if not 200 <= amount <= 3000:
+            return "", "官方发售价应为 200～3000 元；请确认后重新输入"
+        return f"¥{amount}", ""
+
+    def _sync_existing_manual_claim(self, label: str, value: str) -> None:
+        """正文里的旧手填值被规范化时，同步修正对应 manual claim。"""
+        if not self.claims.exists():
+            return
+        c = json.loads(self.claims.read_text(encoding="utf-8"))
+        rows = c.get("claims", []) if isinstance(c, dict) else []
+        cid = "manual_" + re.sub(r"\W+", "_", label)
+        changed = False
+        for row in rows:
+            if row.get("id") != cid:
+                continue
+            row["value"] = value
+            for src in row.get("sources") or []:
+                src["quote"] = f"{label}：{value}"
+            changed = True
+        if changed:
+            self.claims.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def missing_fields(self) -> list[dict[str, str]]:
-        """找出开篇字段里还没填的（二级平台价格由 App 自己填，不算）。"""
+        """找出待补或格式非法的开篇字段；合法裸数字发售价会自动规范化。"""
         a = json.loads(self.article.read_text(encoding="utf-8"))
-        out = []
+        out: list[dict[str, str]] = []
+        normalized: list[tuple[str, str]] = []
+        changed = False
         for s in a.get("sections", []):
             for b in s.get("blocks", []):
                 if b.get("type") != "fields":
                     continue
-                for x in b.get("items", []):
-                    x = str(x)
-                    label = x.split("：")[0]
+                new = []
+                for item in b.get("items", []):
+                    x = str(item)
+                    label, _, raw = x.partition("：")
                     if label == "二级平台价格":
+                        new.append(x)
                         continue
                     if self.MISSING_RX.search(x):
                         out.append({"label": label, "current": x})
+                    elif label == "官方发售价":
+                        value, error = self.normalize_fill_value(label, raw)
+                        if error:
+                            out.append({"label": label, "current": x, "error": error})
+                        elif value != raw.strip():
+                            x = f"{label}：{value}"
+                            normalized.append((label, value))
+                            changed = True
+                    new.append(x)
+                b["items"] = new
+        if changed:
+            self.article.write_text(json.dumps(a, ensure_ascii=False, indent=2), encoding="utf-8")
+            for label, value in normalized:
+                self._sync_existing_manual_claim(label, value)
         return out
 
     def register_manual_claim(self, label: str, value: str) -> None:
@@ -173,27 +238,42 @@ class Pipeline:
         c["claims"] = [x for x in c["claims"] if x.get("id") != cid] + [entry]
         self.claims.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def fill_fields(self, values: dict[str, str]) -> list[str]:
-        """把用户补填的内容写回开篇字段，并登记为可核查数据。"""
+    def fill_fields(self, values: dict[str, str]) -> dict[str, Any]:
+        """校验并写回补填内容；非法值不落盘，直接返回给前端重新输入。"""
+        prepared: dict[str, str] = {}
+        errors: list[dict[str, str]] = []
+        for label, raw in values.items():
+            value, error = self.normalize_fill_value(str(label), str(raw))
+            if error:
+                errors.append({"label": str(label), "current": str(raw), "error": error})
+            else:
+                prepared[str(label)] = value
+        if errors:
+            return {"done": [], "errors": errors}
+
         a = json.loads(self.article.read_text(encoding="utf-8"))
-        done = []
+        done: list[str] = []
+        registered: list[tuple[str, str]] = []
         for s in a.get("sections", []):
             for b in s.get("blocks", []):
                 if b.get("type") != "fields":
                     continue
                 new = []
-                for x in b.get("items", []):
-                    x = str(x)
+                for item in b.get("items", []):
+                    x = str(item)
                     label = x.split("：")[0]
-                    v = (values.get(label) or "").strip()
-                    if v and self.MISSING_RX.search(x):
-                        x = f"{label}：{v}"
+                    value = prepared.get(label, "")
+                    replaceable = self.MISSING_RX.search(x) or label == "官方发售价"
+                    if value and replaceable:
+                        x = f"{label}：{value}"
                         done.append(label)
-                        self.register_manual_claim(label, v)
+                        registered.append((label, value))
                     new.append(x)
                 b["items"] = new
         self.article.write_text(json.dumps(a, ensure_ascii=False, indent=2), encoding="utf-8")
-        return done
+        for label, value in registered:
+            self.register_manual_claim(label, value)
+        return {"done": done, "errors": []}
 
     def set_price(self, low: str, high: str) -> str:
         a = json.loads(self.article.read_text(encoding="utf-8"))
@@ -278,12 +358,16 @@ class Pipeline:
                 pass
         return removed
 
-    def make_cover(self, side_view: Path) -> dict[str, Any]:
+    def make_cover(self, side_view: Path, shoe: str = "") -> dict[str, Any]:
         out = self.d / "封面.png"
-        a = json.loads(self.article.read_text(encoding="utf-8"))
+        if not shoe and self.article.exists():
+            try:
+                shoe = json.loads(self.article.read_text(encoding="utf-8")).get("shoe", "")
+            except Exception:  # noqa: BLE001
+                shoe = ""
         rc, so, se = run([
             str(PY), str(SCRIPTS / "make_cover.py"),
-            "--shoe", a.get("shoe", self.d.name),
+            "--shoe", shoe or self.d.name,
             "--side-view", str(side_view), "--out", str(out),
         ])
         r = tail_json(so)
@@ -312,10 +396,19 @@ class Pipeline:
             "warning_count": rep.get("warning_count", 0),
         }
 
+    def outline_path(self) -> Path:
+        col = self.column
+        if not col and self.article.exists():
+            try:
+                col = json.loads(self.article.read_text(encoding="utf-8")).get("column", "")
+            except Exception:  # noqa: BLE001
+                col = ""
+        return outline_for(col)
+
     def style_lint(self) -> dict[str, Any]:
         rc, so, se = run([
             str(PY), str(SCRIPTS / "style_lint.py"),
-            "--article", str(self.article), "--outline", str(OUTLINE),
+            "--article", str(self.article), "--outline", str(self.outline_path()),
         ])
         r = tail_json(so)
         return {
@@ -330,7 +423,7 @@ class Pipeline:
         rc, so, se = run([
             str(PY), str(SCRIPTS / "render_template.py"),
             "--article", str(self.article), "--template", str(TEMPLATE),
-            "--outline", str(OUTLINE), "--out", str(self.html),
+            "--outline", str(self.outline_path()), "--out", str(self.html),
         ])
         r = tail_json(so)
         r["rc"] = rc
@@ -393,6 +486,32 @@ def resolve_workdir(shoe: str) -> tuple[Path, bool]:
 
 PIPE = Pipeline(WORKDIR)
 
+# ---- 公众号后台登录 ----
+LOGIN: dict[str, Any] = {"running": False, "done": False, "ok": False, "msg": "未开始"}
+
+
+def login_ok(timeout: int = 60) -> bool:
+    """快速判断公众号后台登录态是否还有效。"""
+    rc, so, _ = run([str(PY), str(SCRIPTS / "mp_draft.py"),
+                     "--timeout", str(timeout), "check"], timeout=timeout + 60)
+    return bool(tail_json(so).get("logged_in"))
+
+
+def do_login() -> None:
+    """弹窗让用户扫码，登录态存本机 profile。"""
+    LOGIN.update(running=True, done=False, ok=False, msg="窗口已弹出，请用微信扫码…")
+    try:
+        rc, so, se = run([str(PY), str(SCRIPTS / "mp_draft.py"),
+                          "--timeout", "300", "login"], timeout=400)
+        r = tail_json(so)
+        LOGIN["ok"] = r.get("status") == "ok"
+        LOGIN["msg"] = "登录成功，可以重新点生成" if LOGIN["ok"] else \
+                       f"登录未完成：{r.get('error') or se[-120:] or '扫码超时'}"
+    except Exception as exc:  # noqa: BLE001
+        LOGIN["msg"] = f"登录失败：{str(exc)[:120]}"
+    LOGIN.update(running=False, done=True)
+
+
 # ---- 存草稿（后台执行 + 进度）----
 DRAFT: dict[str, Any] = {"running": False, "stage": "未开始", "done": False,
                          "ok": False, "result": {}, "error": ""}
@@ -448,8 +567,11 @@ def do_write(shoe: str, column: str) -> None:
             detail = ""
             try:
                 j = json.loads(last[last.rfind("{"):]) if "{" in last else {}
-                probs = j.get("problems") or []
-                detail = "；".join(probs) if probs else (j.get("error") or "")
+                if j.get("status") == "service_unavailable":
+                    detail = j.get("error", "")
+                else:
+                    probs = j.get("problems") or []
+                    detail = "；".join(probs) if probs else (j.get("error") or "")
             except Exception:  # noqa: BLE001
                 detail = last[:160]
             WRITE["error"] = f"写稿未完成：{detail or '未知原因'}"
@@ -519,6 +641,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, LOGO.read_bytes(), "image/png")
             else:
                 self._send(404, b"logo missing", "text/plain")
+            return
+        if self.route == "/api/login/status":
+            self._json(LOGIN)
             return
         if self.route == "/api/draft/status":
             self._json(DRAFT)
@@ -617,18 +742,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.route == "/api/cover":
             global PIPE
             shoe = str(payload.get("shoe", "")).strip()
-            wd, has = resolve_workdir(shoe)
+            wd, _ = resolve_workdir(shoe)
+            wd.mkdir(parents=True, exist_ok=True)
             PIPE = Pipeline(wd)
-            if not has:
-                self._json({"status": "no_article",
-                            "error": f"{shoe} 还没有稿件，封面里的鞋名取自稿件"}, 200)
-                return
             items = payload.get("images", [])
             if not items:
                 self._json({"status": "no_image", "error": "需要第一张图（侧视图）"}, 200)
                 return
             paths = PIPE.save_images(items[:1])
-            self._json(PIPE.make_cover(paths[0]))
+            self._json(PIPE.make_cover(paths[0], shoe))
+            return
+        if self.route == "/api/login":
+            if not LOGIN["running"]:
+                threading.Thread(target=do_login, daemon=True).start()
+            self._json({"started": True})
             return
         if self.route == "/api/draft":
             if not DRAFT["running"]:
@@ -642,14 +769,29 @@ def do_generate(p: dict[str, Any]) -> None:
     """后台跑完整生成流程：写稿（若无）→ 价格 → 图片上传 → 核查 → 文风 → 渲染。"""
     global PIPE
     GEN.update(running=True, pct=0, stage="准备", steps=[], done=False, ok=False,
-               error="", need_fields=[])
+               error="", need_fields=[], need_login=False)
     try:
         shoe = str(p.get("shoe", "")).strip()
         column = str(p.get("column", "")).strip() or "跑鞋篇"
         wd, has_article = resolve_workdir(shoe)
-        PIPE = Pipeline(wd)
+        PIPE = Pipeline(wd, column)
         gen_step("选题", True, f"{shoe} → {wd}")
         GEN.update(pct=4, stage="选题确认")
+
+        # 先确认后台登录态。过期就直接弹扫码窗口并等你扫完，不用你自己去处理。
+        if not p.get("dry_run"):
+            GEN.update(pct=3, stage="检查公众号后台登录态")
+            if not login_ok():
+                GEN.update(stage="登录态过期，已弹出扫码窗口，请用微信扫码")
+                gen_step("登录检查", False, "登录态过期，正在弹窗等你扫码…")
+                do_login()
+                if not LOGIN["ok"]:
+                    gen_step("扫码登录", False, LOGIN["msg"])
+                    GEN.update(running=False, done=True, ok=False, pct=100, need_login=True)
+                    return
+                gen_step("扫码登录", True, "登录成功，继续")
+            else:
+                gen_step("登录检查", True, "登录态有效")
 
         if not has_article:
             GEN.update(pct=6, stage="正在搜数据并写稿，这一步最久")
@@ -666,8 +808,13 @@ def do_generate(p: dict[str, Any]) -> None:
         miss = PIPE.missing_fields()
         fills = p.get("fills") or {}
         if fills:
-            done = PIPE.fill_fields(fills)
-            gen_step("补填字段", True, f"已补 {done}")
+            filled = PIPE.fill_fields(fills)
+            if filled["errors"]:
+                gen_step("补填字段", False, "；".join(x["error"] for x in filled["errors"]))
+                GEN.update(running=False, done=True, ok=False, pct=100,
+                           stage="输入格式不对，请重新填写", need_fields=filled["errors"])
+                return
+            gen_step("补填字段", True, f"已补 {filled['done']}")
             miss = PIPE.missing_fields()
         if miss:
             GEN.update(running=False, done=True, ok=False, pct=100,
@@ -715,10 +862,13 @@ def do_generate(p: dict[str, Any]) -> None:
                     got[Path(r.get("local", "")).stem] = r["url"]
             need = len(upload_list)
             if len(got) < need:
+                expired = len(got) == 0     # 一张都没成功，基本是登录态失效
                 gen_step("上传素材库", False,
                          {"成功": len(got), "应传": need,
-                          "提示": "少数图片没拿到地址，可能是登录态过期，跑一次 mp_draft.py login 重新扫码"})
-                GEN.update(running=False, done=True, ok=False, pct=100)
+                          "提示": ("公众号后台登录态过期了，点下面的「重新扫码登录」"
+                                   if expired else "部分图片没拿到地址，重试一次")})
+                GEN.update(running=False, done=True, ok=False, pct=100,
+                           need_login=expired)
                 return
             gen_step("上传素材库", True,
                      f"{len(got)} 张（含封面）" if (PIPE.d / "封面.png").exists() else f"{len(got)} 张")

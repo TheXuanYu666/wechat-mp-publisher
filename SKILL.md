@@ -2,7 +2,7 @@
 name: wechat-mp-publisher
 description: '端到端生产公众号图文：选题 → 全网测评数据搜集（国内+海外）→ 得物二级市场配色价格 → 事实核查 → 按本号历史排版 1:1 复刻 HTML → 配图 → 灌入公众号后台存草稿。排版靠 extract_template.py 把历史文章的组件整段抠出来做占位符替换，不靠人工描述、不靠 CSS 泛化；正文里每个带单位的数字都必须在 claims.json 登记并通过 fact_check.py。当用户要写/发公众号文章，尤其是跑鞋/球鞋测评+价格类内容时使用。'
 metadata:
-  author: jackli
+  author: your-name
   display_name: 公众号图文生产
   version: 2.0.0
   tags:
@@ -78,8 +78,8 @@ python scripts/learn_style.py --url u1 --url u2 --url u3 \
 ```bash
 # 先自动同步已发清单（公开合集页，不需要后台登录）
 python scripts/fetch_published.py \
-  --from-article https://mp.weixin.qq.com/s/BiqhYASeI583lBnamO_wZA \
-  --from-article https://mp.weixin.qq.com/s/m29QBZ5gVfx6wzBwxPkbHg --write
+  --from-article https://mp.weixin.qq.com/s/xxx \
+  --from-article https://mp.weixin.qq.com/s/yyy --write
 python scripts/topic_pick.py list                    # 看已写台账
 node ~/.kiro/skills/istarshine-trending-search/scripts/cli.js --task "最近7天跑鞋/篮球鞋热榜热搜"
 node ~/.kiro/skills/istarshine-domestic-web-wide-search/scripts/cli.js stats \

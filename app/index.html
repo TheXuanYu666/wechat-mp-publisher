@@ -89,6 +89,21 @@
     <div class="cands" id="cands"></div>
     <div class="bar" id="wbarWrap" style="display:none"><i id="wbar"></i></div>
     <div class="hint" id="wmsg" style="display:none"></div>
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">
+      <h2 style="font-size:15px">或者直接写鞋名</h2>
+      <p class="lead">上面列表里没有的也行。写完选栏目，点「用这双」。</p>
+      <div class="row">
+        <input type="text" id="manualShoe" placeholder="例如 Nike Vomero 18"
+               style="width:260px;text-align:left"/>
+        <select id="manualCol" style="font:15px inherit;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff">
+          <option value="跑鞋篇">跑鞋篇</option>
+          <option value="篮球鞋篇">篮球鞋篇</option>
+        </select>
+        <button class="ghost" id="useManual">用这双</button>
+      </div>
+      <div class="hint" id="manualMsg" style="margin-top:8px"></div>
+    </div>
+
     <div class="nav">
       <button class="ghost" id="research">重新搜索</button>
       <button id="n1" disabled>下一步</button>
@@ -137,6 +152,13 @@
     <h2>生成文章</h2>
     <p class="lead" id="summary">—</p>
     <div class="hint" id="genNote" style="margin:-8px 0 14px"></div>
+    <div id="loginBox" class="warn" style="display:none">
+      <b>公众号后台登录态过期了</b>，图片传不上去。点下面按钮扫码登录，然后重新点生成。
+      <div style="margin-top:10px">
+        <button id="loginGo">重新扫码登录</button>
+        <span class="hint" id="loginMsg" style="margin-left:10px"></span>
+      </div>
+    </div>
     <div class="row">
       <button id="go">开始生成</button>
       <button id="draft" class="ghost" disabled>保存到公众号草稿</button>
@@ -155,6 +177,8 @@
 
 <script>
 const $=s=>document.querySelector(s), mask=$('#mask');
+// 某个元素缺失时不要让整个脚本崩掉
+const on=(sel,ev,fn)=>{ const e=$(sel); if(e) e.addEventListener(ev,fn); };
 let images={}, picked=null, cands=[], slots=[], ready=false, cur=1;
 
 function show(n){ cur=n;
@@ -217,7 +241,9 @@ function renderCands(d){
       (c.has_article?'<span class="ok" style="font-size:12px">已有稿件</span>'
         :'');
     el.onclick=()=>{ document.querySelectorAll('.cand').forEach(x=>x.classList.remove('sel'));
-      el.classList.add('sel'); picked=c; sync(); };
+      el.classList.add('sel'); picked=c;
+      const mm=$('#manualMsg'), qq=$('#manualShoe');
+      if(mm) mm.textContent=''; if(qq) qq.value=''; sync(); };
     box.appendChild(el);
   });
 }
@@ -245,6 +271,27 @@ async function runSearch(){
   }, 600);
 }
 $('#research').onclick=runSearch;
+
+on('#useManual','click',async ()=>{
+  const name=$('#manualShoe').value.trim();
+  if(!name){ $('#manualMsg').innerHTML='<span class="bad">先写个鞋名</span>'; return; }
+  const col=$('#manualCol').value;
+  // 已有稿件的话直接复用，避免重复写稿
+  let has=false;
+  try{
+    const d=await (await fetch('/api/candidates')).json();
+    const hit=(d.candidates||[]).find(c=>
+      c.name.replace(/[\s\-_]/g,'').toLowerCase()===name.replace(/[\s\-_]/g,'').toLowerCase());
+    if(hit) has=!!hit.has_article;
+  }catch(e){}
+  picked={name, column:col, has_article:has, hot:'手动输入'};
+  document.querySelectorAll('.cand').forEach(x=>x.classList.remove('sel'));
+  $('#manualMsg').innerHTML='<span class="ok">已选：'+name+'（'+col+'）'+
+    (has?'，已有稿件':'，还没稿件，生成时会先自动写')+'</span>';
+  sync();
+});
+
+on('#manualShoe','input',()=>{ $('#manualMsg').textContent=''; });
 runSearch();
 
 $('#n1').onclick=()=>show(2);
@@ -279,7 +326,7 @@ function take(el,file){ const fr=new FileReader();
 
 async function startGenerate(fills){
   $('#log').innerHTML=''; $('#bar').style.width='3%'; lock(true);
-  $('#fillBox').style.display='none';
+  $('#fillBox').style.display='none'; $('#loginBox').style.display='none';
   let shown=0;
   log('<span class="spin"></span> 开始生成，界面已锁定，避免误触。');
   if(!picked.has_article) log('这双还没有稿件，会先搜数据写稿，大约需要十分钟。','hint');
@@ -302,13 +349,23 @@ async function startGenerate(fills){
     if(!st.done && st.stage) $('#genNote').innerHTML='<span class="spin"></span> '+st.stage;
     if(st.done){
       clearInterval(poll); $('#genNote').textContent='';
-      if((st.need_fields||[]).length){
+      if(st.need_login){
+        $('#loginBox').style.display='block';
+        log('图片一张都没传上去，基本是登录态失效。点「重新扫码登录」。','hint');
+      }
+      else if((st.need_fields||[]).length){
         const box=$('#fillList'); box.innerHTML='';
         st.need_fields.forEach(f=>{
-          const row=document.createElement('div'); row.style.margin='6px 0';
+          const row=document.createElement('div'); row.style.margin='8px 0';
+          const isPrice=f.label==='官方发售价';
           row.innerHTML='<label style="display:inline-block;width:110px">'+f.label+
-            '</label><input type="text" data-label="'+f.label+
-            '" placeholder="例如 ¥1099" style="width:220px;text-align:left"/>';
+            '</label><input type="text" inputmode="numeric" data-label="'+f.label+
+            '" placeholder="'+(isPrice?'只写数字即可，例如 1490':'请输入具体内容')+
+            '" style="width:220px;text-align:left"/>'+
+            '<div class="fillError bad" style="margin:4px 0 0 114px;font-size:12px">'+
+            (f.error||'')+'</div>';
+          const inp=row.querySelector('input');
+          inp.addEventListener('input',()=>{ row.querySelector('.fillError').textContent=''; });
           box.appendChild(row);
         });
         $('#fillBox').style.display='block';
@@ -324,12 +381,46 @@ async function startGenerate(fills){
   }, 900);
 }
 
+on('#loginGo','click',async ()=>{
+  $('#loginMsg').innerHTML='<span class="spin"></span> 窗口已弹出，请扫码…';
+  $('#loginGo').disabled=true;
+  try{ await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }
+  catch(e){ $('#loginMsg').innerHTML='<span class="bad">'+e+'</span>'; $('#loginGo').disabled=false; return; }
+  const poll=setInterval(async()=>{
+    let st; try{ st=await (await fetch('/api/login/status')).json(); }catch(e){ return; }
+    $('#loginMsg').innerHTML = st.done
+      ? (st.ok?'<span class="ok">✅ '+st.msg+'</span>':'<span class="bad">'+st.msg+'</span>')
+      : '<span class="spin"></span> '+st.msg;
+    if(st.done){
+      clearInterval(poll); $('#loginGo').disabled=false;
+      if(st.ok) $('#loginBox').style.display='none';
+    }
+  }, 1500);
+});
+
+function normalizeFillInput(input){
+  const label=input.dataset.label, raw=input.value.trim();
+  if(!raw) return {error:label+'不能为空'};
+  if(label!=='官方发售价') return {value:raw};
+  if(/(?:US\s*\$|USD|美元|美金|\$)/i.test(raw))
+    return {error:'请填中国大陆人民币发售价；只写数字即可，例如 1490'};
+  const compact=raw.replace(/[\s,，]/g,'');
+  const m=compact.match(/^(?:人民币)?[¥￥]?(\d{2,5})(?:元)?$/);
+  if(!m) return {error:'格式不对；只写数字即可，例如 1490（自动变成 ¥1490）'};
+  const amount=Number(m[1]);
+  if(amount<200 || amount>3000) return {error:'价格应为 200～3000 元，请确认后重新输入'};
+  return {value:'¥'+amount};
+}
+
 $('#fillGo').onclick=()=>{
-  const fills={};
+  const fills={}; let bad=false, firstBad=null;
   document.querySelectorAll('#fillList input').forEach(i=>{
-    if(i.value.trim()) fills[i.dataset.label]=i.value.trim();
+    const result=normalizeFillInput(i), err=i.parentElement.querySelector('.fillError');
+    err.textContent=result.error||'';
+    if(result.error){ bad=true; if(!firstBad) firstBad=i; return; }
+    i.value=result.value; fills[i.dataset.label]=result.value;
   });
-  if(!Object.keys(fills).length){ alert('先填一下再继续'); return; }
+  if(bad){ firstBad.focus(); return; }
   startGenerate(fills);
 };
 

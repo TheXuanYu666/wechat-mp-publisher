@@ -16,6 +16,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent.parent
@@ -81,18 +82,26 @@ PROMPT = """请为公众号「RDFZ 步界社」写一篇 {column} 测评，鞋�
 5. 写作口吻按社团定位：大白话，不要出现 SA / BR / AC / Nm 这类实验室缩写，
    也不要写 v41 这种写法（用「上一代」）。提到其他鞋款要带品牌名。
    不写产品改进建议、不引导读者去买别的鞋，只讲客观体验和优缺点。
-4. 行内强调只有两种：**优点短句** 出蓝色，~~缺点短句~~ 出橙色。一段标 2–4 处，
-   全篇蓝色 30 处左右、橙色 10 处左右。
+4. 行内强调只有两种：**每一个明确的优点短句**都用蓝色，~~每一个明确的缺点短句~~都用橙色。
+   这里按语义判断，不是按全篇数量凑数，也没有“每段最多 4 个”的上限：一段有几个互不重复的
+   明确评价，就分别标出几个。尤其不能漏掉否定式优点，例如 **没有多余堆料**、**支撑不生硬**、
+   **后跟不乱晃**、**不会明显拖脚**；也不能漏掉“压力分布均匀、包裹自然、处理干净”这类
+   做工或体验优点。只含鞋款配置、尺码、参数的中性事实不标色，不把整句全标色。
+   优缺点总结列表本身仍然不得标色。
+5. 正文只写鞋本身和直接体验结论，**绝对不准描述资料搜集或写作过程**。不得出现“现有资料不足”
+   “公开资料显示”“查不到”“因此不硬写数字”“可以确认的是”等话。证据、来源和数据限制只写在
+   claims.json；某个结论没有可靠依据就直接不写，不要在正文向读者解释为什么没写。
 5. 优缺点条数不限，但正文里提到的优点和缺点都必须进列表；**优点与缺点这两段的条目一律不标颜色**
    （历史文章里这两段没有任何彩色字）；缺点只写鞋本身性能问题，
    不写性价比。评分：跑鞋 5 项写 X/10，篮球鞋 7 项写 X 分。
 6. 结论句式：定位句 → 凭借哪些优势成为哪类人的选择 → 次要优点提升什么场景 →
    但哪些短板限制了适用场景 → 建议作为什么鞋使用、主要用于什么、避免什么。
-7. 文末 footer 只要 tester/editor（都写{测评人}）和 date，不要 reviewers。
-8. 开篇字段里**只有「二级平台价格」允许写「待补」**（由 App 里的操作者填）。
-   「官方发售价」必须去查到具体数字，优先查品牌中国官网的国行价（写成 ¥XXX），
-   查不到国行价再用官方美价并注明币种。**不许写「待补」或留空**。
-   「产品定位」「实测重量」同样必须有具体内容。
+7. 文末 footer 只要 tester/editor（都写 {tester}）和 date，不要 reviewers。
+8. 开篇字段里「二级平台价格」允许写「待补」（由 App 里的操作者填）。
+   「官方发售价」必须优先查品牌中国大陆官网或中国大陆官方渠道公布的**人民币首发价**，
+   统一写成 `¥XXX`。**绝对禁止写美元/美金/USD/US$ 发售价，也禁止按汇率自行换算海外 MSRP。**
+   如果确实查不到可靠的中国大陆人民币首发价，就写「待补人民币发售价」，由 App 弹窗让
+   操作者补填；不得用海外价格代替。「产品定位」「实测重量」必须有具体内容。
 9. 四张图片位：01/02/03/04 各一个 img 块，url 先写 "TODO_上传素材库后回填"，
    由 App 负责上传与回填。不要自己找图。
 
@@ -126,8 +135,12 @@ def main(argv: list[str] | None = None) -> int:
     (wd / "tmp").mkdir(exist_ok=True)
     py = SKILL / ".venv" / "bin" / "python"
 
+    sys.path.insert(0, str(SKILL))
+    from config import footer_defaults  # noqa: PLC0415
+
+    tester = footer_defaults().get("tester") or "运营者"
     prompt = PROMPT.format(shoe=args.shoe, column=args.column, skill=SKILL,
-                           workdir=wd, py=py)
+                           workdir=wd, py=py, tester=tester)
 
     progress(5, f"交给 kiro-cli 写《{args.column}——{args.shoe}》")
     kiro = find_kiro()
@@ -139,29 +152,56 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [kiro, "chat", "--no-interactive", "--agent", "wechat-mp",
            "--effort", args.effort, "--trust-all-tools", prompt]
 
-    progress(12, "搜集数据与撰写中，这一步比较久，请耐心等")
-    try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, bufsize=1, errors="replace", cwd=str(SKILL))
-    except FileNotFoundError:
-        print(json.dumps({"status": "no_kiro", "error": f"无法执行 {kiro}"},
-                         ensure_ascii=False))
-        return 6
-
+    transient_re = re.compile(
+        r"(MODEL_TEMPORARILY_UNAVAILABLE|temporarily unavailable|Internal error|"
+        r"serviceUnavailableError|ThrottlingException|rate.?limit)", re.I)
     pct, tail = 12, []
-    for line in p.stdout or []:
-        tail.append(line.rstrip()[:200])
-        if len(tail) > 40:
-            tail.pop(0)
-        if pct < 88:
-            pct += 1
-            progress(pct, "撰写中…")
-    try:
-        p.wait(timeout=args.timeout)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        print(json.dumps({"status": "timeout", "tail": tail[-8:]}, ensure_ascii=False))
-        return 8
+    for attempt in range(1, 4):
+        progress(pct, "搜集数据与撰写中，这一步比较久，请耐心等" if attempt == 1
+                 else f"Kiro 服务临时异常，正在自动重试（{attempt}/3）")
+        try:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1, errors="replace", cwd=str(SKILL))
+        except FileNotFoundError:
+            print(json.dumps({"status": "no_kiro", "error": f"无法执行 {kiro}"},
+                             ensure_ascii=False))
+            return 6
+
+        tail = []
+        for line in p.stdout or []:
+            tail.append(line.rstrip()[:200])
+            if len(tail) > 40:
+                tail.pop(0)
+            if pct < 88:
+                pct += 1
+                progress(pct, "撰写中…")
+        try:
+            p.wait(timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            print(json.dumps({"status": "timeout", "tail": tail[-8:]}, ensure_ascii=False))
+            return 8
+
+        joined = "\n".join(tail)
+        if transient_re.search(joined):
+            if attempt < 3:
+                time.sleep(5)
+                continue
+            print(json.dumps({
+                "status": "service_unavailable",
+                "error": "Kiro 服务当前内部异常，App 已自动重试 3 次；不是鞋款、图片或稿件格式问题，请稍后再点生成",
+                "tail": tail[-4:],
+            }, ensure_ascii=False))
+            return 10
+        if p.returncode != 0 or re.search(r"^\s*Error:", joined, re.M):
+            print(json.dumps({
+                "status": "cli_error",
+                "error": next((x.strip() for x in reversed(tail) if x.strip()),
+                              f"kiro-cli 退出码 {p.returncode}"),
+                "tail": tail[-4:],
+            }, ensure_ascii=False))
+            return 11
+        break
 
     progress(92, "校验产物")
     art, cl = wd / "article.json", wd / "claims.json"
