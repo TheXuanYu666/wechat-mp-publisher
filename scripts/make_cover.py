@@ -112,6 +112,28 @@ def split_runs(text: str) -> list[tuple[str, bool]]:
     return runs
 
 
+def _num(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _element(layout: dict, name: str, default_x: int, default_y: int,
+             base_w: int, base_h: int, min_scale: float, max_scale: float) -> dict[str, float | int]:
+    """把前端布局约束在画布内，返回可直接绘制的实际框。"""
+    requested = layout.get(name) if isinstance(layout.get(name), dict) else {}
+    scale = max(min_scale, min(max_scale, _num(requested.get("scale"), 1.0)))
+    # 不允许缩放后比整个画布还大。
+    scale = min(scale, CANVAS[0] / max(1, base_w), CANVAS[1] / max(1, base_h))
+    w, h = max(1, round(base_w * scale)), max(1, round(base_h * scale))
+    x = round(_num(requested.get("x"), default_x))
+    y = round(_num(requested.get("y"), default_y))
+    x = max(0, min(CANVAS[0] - w, x))
+    y = max(0, min(CANVAS[1] - h, y))
+    return {"x": x, "y": y, "w": w, "h": h, "scale": round(scale, 4)}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成公众号封面")
     ap.add_argument("--shoe", required=True)
@@ -119,63 +141,89 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--color", default="#884b3f", help="鞋名文字颜色")
     ap.add_argument("--shoe-height", type=float, default=0.62,
-                    help="鞋图高度占画布比例")
+                    help="鞋图默认高度占画布比例")
+    ap.add_argument("--layout-json", default="",
+                    help='元素布局 JSON：shoe/text/logo 各含 x、y、scale')
     args = ap.parse_args(argv)
 
-    canvas = Image.new("RGBA", CANVAS, (255, 255, 255, 255))
-
-    if LOGO.exists():
-        logo = Image.open(LOGO).convert("RGBA")
-        lw, lh = LOGO_BOX[2] - LOGO_BOX[0], LOGO_BOX[3] - LOGO_BOX[1]
-        logo = logo.resize((lw, lh), Image.LANCZOS)
-        canvas.alpha_composite(logo, (LOGO_BOX[0], LOGO_BOX[1]))
-
-    # 社标右侧的可用区域
-    area_x0, area_x1 = LOGO_BOX[2], CANVAS[0]
-    area_w = area_x1 - area_x0
+    try:
+        requested_layout = json.loads(args.layout_json) if args.layout_json else {}
+        if not isinstance(requested_layout, dict):
+            raise ValueError("layout 必须是对象")
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(json.dumps({"status": "bad_layout", "error": str(exc)}, ensure_ascii=False))
+        return 3
 
     sv = Path(args.side_view).expanduser()
     if not sv.exists():
         print(json.dumps({"status": "no_side_view", "path": str(sv)}, ensure_ascii=False))
         return 2
-    shoe = trim_bg(Image.open(sv))
-    target_h = int(CANVAS[1] * args.shoe_height)
-    ratio = target_h / shoe.height
-    shoe = shoe.resize((max(1, int(shoe.width * ratio)), target_h), Image.LANCZOS)
-    if shoe.width > area_w * 0.92:                     # 太宽就按宽度收
-        r2 = (area_w * 0.92) / shoe.width
-        shoe = shoe.resize((int(shoe.width * r2), int(shoe.height * r2)), Image.LANCZOS)
+
+    # 先得到鞋图默认基准尺寸；前端 scale 始终相对这个尺寸，反复编辑不会累积误差。
+    shoe_source = trim_bg(Image.open(sv))
+    base_shoe_h = max(1, int(CANVAS[1] * max(0.1, min(0.95, args.shoe_height))))
+    ratio = base_shoe_h / max(1, shoe_source.height)
+    base_shoe_w = max(1, int(shoe_source.width * ratio))
+    area_x0, area_x1 = LOGO_BOX[2], CANVAS[0]
+    area_w = area_x1 - area_x0
+    if base_shoe_w > area_w * 0.92:
+        r2 = (area_w * 0.92) / base_shoe_w
+        base_shoe_w, base_shoe_h = int(base_shoe_w * r2), int(base_shoe_h * r2)
 
     runs = split_runs(args.shoe)
     has_cjk = any(c for _, c in runs)
-    size = 125 if has_cjk else 100
-    f_en = load_font(pick(FONT_EN, FONT_EN_ALT), size, ("Herculanum", "Regular"))
-    f_cn = load_font(pick(FONT_CN, FONT_CN_ALT), size, ("Xingkai SC", "Light"))
+    base_font_size = 125 if has_cjk else 100
+    text_req = requested_layout.get("text") if isinstance(requested_layout.get("text"), dict) else {}
+    text_scale = max(0.45, min(2.0, _num(text_req.get("scale"), 1.0)))
+    font_size = max(18, round(base_font_size * text_scale))
+    f_en = load_font(pick(FONT_EN, FONT_EN_ALT), font_size, ("Herculanum", "Regular"))
+    f_cn = load_font(pick(FONT_CN, FONT_CN_ALT), font_size, ("Xingkai SC", "Light"))
+    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    widths = [measure.textlength(seg, font=f_cn if cjk else f_en) for seg, cjk in runs]
+    text_w, text_h = max(1, int(sum(widths) + 1)), font_size
+    if text_w > CANVAS[0]:
+        text_scale *= CANVAS[0] / text_w
+        font_size = max(18, round(base_font_size * text_scale))
+        f_en = load_font(pick(FONT_EN, FONT_EN_ALT), font_size, ("Herculanum", "Regular"))
+        f_cn = load_font(pick(FONT_CN, FONT_CN_ALT), font_size, ("Xingkai SC", "Light"))
+        widths = [measure.textlength(seg, font=f_cn if cjk else f_en) for seg, cjk in runs]
+        text_w, text_h = max(1, int(sum(widths) + 1)), font_size
+
+    # 使用当前缩放值计算默认居中位置；前端传 x/y 后则按用户位置。
+    shoe_req = requested_layout.get("shoe") if isinstance(requested_layout.get("shoe"), dict) else {}
+    shoe_scale = max(0.25, min(1.6, _num(shoe_req.get("scale"), 1.0)))
+    preview_shoe_w, preview_shoe_h = round(base_shoe_w * shoe_scale), round(base_shoe_h * shoe_scale)
+    gap = int(CANVAS[1] * 0.05)
+    top = (CANVAS[1] - (text_h + gap + preview_shoe_h)) // 2
+    default_tx = area_x0 + (area_w - text_w) // 2
+    default_sx = area_x0 + (area_w - preview_shoe_w) // 2
+
+    text_box = {
+        "x": max(0, min(CANVAS[0] - text_w, round(_num(text_req.get("x"), default_tx)))),
+        "y": max(0, min(CANVAS[1] - text_h, round(_num(text_req.get("y"), top)))),
+        "w": text_w, "h": text_h, "scale": round(text_scale, 4),
+    }
+    shoe_box = _element(requested_layout, "shoe", default_sx, top + text_h + gap,
+                        base_shoe_w, base_shoe_h, 0.25, 1.6)
+    logo_box = _element(requested_layout, "logo", LOGO_BOX[0], LOGO_BOX[1],
+                        LOGO_BOX[2] - LOGO_BOX[0], LOGO_BOX[3] - LOGO_BOX[1], 0.25, 1.5)
+
+    canvas = Image.new("RGBA", CANVAS, (255, 255, 255, 255))
+    if LOGO.exists():
+        logo = Image.open(LOGO).convert("RGBA").resize(
+            (int(logo_box["w"]), int(logo_box["h"])), Image.LANCZOS)
+        canvas.alpha_composite(logo, (int(logo_box["x"]), int(logo_box["y"])))
 
     c = args.color.lstrip("#")
     color = tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) + (255,)
     draw = ImageDraw.Draw(canvas)
-    widths = []
-    for seg, cjk in runs:
-        f = f_cn if cjk else f_en
-        widths.append(draw.textlength(seg, font=f))
-    text_w = sum(widths)
-    text_h = size
-
-    # 文字在上、鞋图在下，整体居中于右侧空白区
-    gap = int(CANVAS[1] * 0.05)
-    block_h = text_h + gap + shoe.height
-    top = (CANVAS[1] - block_h) // 2
-    tx = area_x0 + (area_w - text_w) // 2
-    ty = top
+    tx = float(text_box["x"])
     for (seg, cjk), wd in zip(runs, widths):
-        f = f_cn if cjk else f_en
-        draw.text((tx, ty), seg, font=f, fill=color)
+        draw.text((tx, int(text_box["y"])), seg, font=f_cn if cjk else f_en, fill=color)
         tx += wd
 
-    sx = area_x0 + (area_w - shoe.width) // 2
-    sy = top + text_h + gap
-    canvas.alpha_composite(shoe, (sx, sy))
+    shoe = shoe_source.resize((int(shoe_box["w"]), int(shoe_box["h"])), Image.LANCZOS)
+    canvas.alpha_composite(shoe, (int(shoe_box["x"]), int(shoe_box["y"])))
 
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         "font_files": {"en": pick(FONT_EN, FONT_EN_ALT), "cn": pick(FONT_CN, FONT_CN_ALT)},
         "shoe_size": [shoe.width, shoe.height], "color": args.color,
         "faces": {"en": list(f_en.getname()), "cn": list(f_cn.getname())},
+        "layout": {"shoe": shoe_box, "text": text_box, "logo": logo_box},
     }, ensure_ascii=False, indent=2))
     return 0
 

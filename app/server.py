@@ -42,6 +42,7 @@ def outline_for(column: str) -> Path:
         return OUTLINE_BB
     return OUTLINE
 CANDS = SKILL / "references" / "candidates.json"
+PUBLISHED = SKILL / "references" / "published.json"
 sys.path.insert(0, str(SKILL))
 from config import CFG, assets_root  # noqa: E402
 
@@ -358,18 +359,22 @@ class Pipeline:
                 pass
         return removed
 
-    def make_cover(self, side_view: Path, shoe: str = "") -> dict[str, Any]:
+    def make_cover(self, side_view: Path, shoe: str = "",
+                   layout: dict[str, Any] | None = None) -> dict[str, Any]:
         out = self.d / "封面.png"
         if not shoe and self.article.exists():
             try:
                 shoe = json.loads(self.article.read_text(encoding="utf-8")).get("shoe", "")
             except Exception:  # noqa: BLE001
                 shoe = ""
-        rc, so, se = run([
+        cmd = [
             str(PY), str(SCRIPTS / "make_cover.py"),
             "--shoe", shoe or self.d.name,
             "--side-view", str(side_view), "--out", str(out),
-        ])
+        ]
+        if layout:
+            cmd += ["--layout-json", json.dumps(layout, ensure_ascii=False, separators=(",", ":"))]
+        rc, so, se = run(cmd)
         r = tail_json(so)
         r["rc"] = rc
         if se:
@@ -454,8 +459,9 @@ class Pipeline:
             "--html", str(self.html), "--save", "--close", "--headless",
             "--title", m["title"], "--author", m["author"],
             "--digest", m["digest"], "--album", m["album"],
+            "--original", "--claim-source",
             *(["--cover", str(self.d / "封面.png")] if (self.d / "封面.png").exists() else []),
-            # 封面与发表仍由用户自己处理
+            # 只保存草稿；最终发表仍由用户自己点击
         ], timeout=1200)
         r = tail_json(so)
         r["rc"] = rc
@@ -521,7 +527,7 @@ def do_draft() -> None:
     DRAFT.update(running=True, stage="打开公众号后台…", done=False, ok=False,
                  result={}, error="")
     try:
-        DRAFT["stage"] = "设置封面、合集、原创声明、创作来源，然后保存草稿"
+        DRAFT["stage"] = "写入并核验正文，成功后设置封面、合集、原创声明和创作来源，再保存草稿"
         r = PIPE.push_draft()
         DRAFT["result"] = r
         DRAFT["ok"] = bool(r.get("saved_draft"))
@@ -581,26 +587,59 @@ def do_write(shoe: str, column: str) -> None:
 
 
 # ---- 热度搜索（后台线程 + 进度轮询）----
-SEARCH: dict[str, Any] = {"running": False, "pct": 0, "msg": "未开始", "done": False, "error": ""}
+SEARCH: dict[str, Any] = {"running": False, "pct": 0, "msg": "未开始", "done": False,
+                          "error": "", "detail": "", "published_count": 0,
+                          "published_synced_at": ""}
 
 
 def do_search() -> None:
-    SEARCH.update(running=True, pct=0, msg="启动搜索…", done=False, error="")
+    """先登录并同步后台已发表文章，再搜热门候选并查重。"""
+    SEARCH.update(running=True, pct=0, msg="检查公众号登录态…", done=False, error="",
+                  detail="", published_count=0, published_synced_at="")
     try:
+        if not login_ok(timeout=12):
+            SEARCH.update(pct=3, msg="公众号登录已过期，已弹出扫码窗口，请扫码…")
+            do_login()
+            if not LOGIN.get("ok"):
+                raise RuntimeError(LOGIN.get("msg") or "公众号登录未完成")
+
+        SEARCH.update(pct=8, msg="登录成功，正在同步公众号已发表文章…")
+        rc, so, se = run([
+            str(PY), str(SCRIPTS / "mp_draft.py"), "--timeout", "60", "published",
+            "--headless", "--out", str(PUBLISHED),
+        ], timeout=180)
+        synced = tail_json(so)
+        if rc != 0 or synced.get("status") != "ok":
+            raise RuntimeError(
+                "已发表文章同步失败：" + str(synced.get("error") or se[-160:] or f"退出码 {rc}")
+            )
+        SEARCH["published_count"] = int(synced.get("count", 0) or 0)
+        SEARCH["published_synced_at"] = str(synced.get("synced_at", ""))
+        SEARCH.update(pct=20, msg=f"已同步已发表 {SEARCH['published_count']} 篇，开始搜索热门鞋…")
+
         proc = subprocess.Popen(
             [str(PY), str(SCRIPTS / "hot_shoes.py"), "--out", str(CANDS), "--limit", "5"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             errors="replace", env=ENV)
+        tail: list[str] = []
         for line in proc.stdout or []:
-            m = re.match(r"PROGRESS (\d+) (.+)", line.strip())
+            text = line.strip()
+            m = re.match(r"PROGRESS (\d+) (.+)", text)
             if m:
-                SEARCH.update(pct=int(m.group(1)), msg=m.group(2))
+                pct = 20 + round(int(m.group(1)) * 0.8)
+                SEARCH.update(pct=pct, msg=m.group(2))
+            elif text:
+                tail.append(text[:300])
+                tail = tail[-8:]
         proc.wait(timeout=600)
+        SEARCH["detail"] = "\n".join(tail[-4:])
         if proc.returncode != 0:
-            SEARCH["error"] = f"搜索脚本退出码 {proc.returncode}"
+            reason = next((x for x in reversed(tail) if not x.startswith(("File ", "Traceback"))), "")
+            raise RuntimeError(reason or f"搜索脚本退出码 {proc.returncode}")
     except Exception as exc:  # noqa: BLE001
-        SEARCH["error"] = str(exc)[:200]
-    SEARCH.update(running=False, done=True, pct=100)
+        SEARCH["error"] = str(exc)[:240]
+    finally:
+        SEARCH.update(running=False, done=True, pct=100)
 
 
 UI = Path(__file__).resolve().parent / "index.html"
@@ -665,18 +704,18 @@ class Handler(BaseHTTPRequestHandler):
             for c in data.get("candidates", []):
                 wd, has = resolve_workdir(c.get("name", ""))
                 out.append({**c, "has_article": has, "workdir": str(wd)})
-            # 素材盘里已有稿件但候选表没列的，也补进来
-            listed = {re.sub(r"[\s\-_°%]", "", c["name"]).lower() for c in out}
-            if ROOT.exists():
-                for d in sorted(x for x in ROOT.iterdir() if x.is_dir()):
-                    if not (d / "article.json").exists():
-                        continue
-                    if re.sub(r"[\s\-_°%]", "", d.name).lower() in listed:
-                        continue
-                    a = json.loads((d / "article.json").read_text(encoding="utf-8"))
-                    out.append({"name": a.get("shoe", d.name), "column": a.get("column", ""),
-                                "hot": "素材盘里已有稿件", "has_article": True, "workdir": str(d)})
-            self._json({"updated": data.get("updated", ""), "candidates": out})
+            ledger = {}
+            if PUBLISHED.exists():
+                try:
+                    ledger = json.loads(PUBLISHED.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    ledger = {}
+            self._json({"updated": data.get("updated", ""), "candidates": out,
+                        "excluded_written": data.get("excluded_written", 0),
+                        "excluded_published": data.get("excluded_published", 0),
+                        "local_articles_marked": data.get("local_articles_marked", 0),
+                        "published_count": ledger.get("count", len(ledger.get("written", []))),
+                        "published_synced_at": ledger.get("synced_at", "")})
             return
         if self.route == "/api/context":
             a = {}
@@ -746,11 +785,16 @@ class Handler(BaseHTTPRequestHandler):
             wd.mkdir(parents=True, exist_ok=True)
             PIPE = Pipeline(wd)
             items = payload.get("images", [])
-            if not items:
+            if items:
+                paths = PIPE.save_images(items[:1])
+                side_view = paths[0]
+            else:
+                side_view = next(iter(sorted(PIPE.imgs.glob("01.*"))), None) if PIPE.imgs.exists() else None
+            if not side_view:
                 self._json({"status": "no_image", "error": "需要第一张图（侧视图）"}, 200)
                 return
-            paths = PIPE.save_images(items[:1])
-            self._json(PIPE.make_cover(paths[0], shoe))
+            layout = payload.get("layout") if isinstance(payload.get("layout"), dict) else None
+            self._json(PIPE.make_cover(side_view, shoe, layout))
             return
         if self.route == "/api/login":
             if not LOGIN["running"]:

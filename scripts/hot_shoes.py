@@ -141,32 +141,43 @@ def main(argv: list[str] | None = None) -> int:
             errors.append("istarshine 热榜没返回可用结果")
     pct = 75
 
-    progress(pct, "剔除已经写过的鞋款")
+    progress(pct, "按公众号已发表台账查重")
     fresh = [c for c in pool if norm(c["name"]) not in done]
-    dup = len(pool) - len(fresh)
+    excluded_published = len(pool) - len(fresh)
 
-    # 每个栏目各取前 limit 个，按榜单位次排序
+    # 查重只认公众号后台已发表内容。本地 article.json 不代表已发布，只标注可复用。
+    if str(SKILL) not in sys.path:
+        sys.path.insert(0, str(SKILL))
+    from config import assets_root as _ar  # noqa: PLC0415
+    root = _ar()
+    local_articles: set[str] = set()
+    if root.exists():
+        try:
+            local_articles = {
+                norm(d.name) for d in root.iterdir()
+                if d.is_dir() and (d / "article.json").exists()
+            }
+        except OSError:
+            local_articles = set()
+
+    # 只剔除已发表后，每个栏目各取前 limit 个；已有本地稿件照常进入热门候选。
     picked: list[dict[str, Any]] = []
     for column, _ in CATALOGS:
         sub = sorted([c for c in fresh if c["column"] == column], key=lambda x: x["rank"])
         picked += sub[: args.limit]
-
-    progress(90, "标注是否已有稿件")
-    from config import assets_root as _ar
-    root = _ar()
     for c in picked:
-        c["has_article"] = False
-        if root.exists():
-            for d in root.iterdir():
-                if d.is_dir() and norm(d.name) == norm(c["name"]) and (d / "article.json").exists():
-                    c["has_article"] = True
-                    break
+        c["has_article"] = norm(c["name"]) in local_articles
+    local_marked = sum(1 for c in picked if c["has_article"])
+
+    progress(90, "标注可复用的本地稿件")
 
     payload = {
-        "_note": "由 hot_shoes.py 自动生成。热度依据来自 RunRepeat 分类榜位次，已剔除台账里写过的鞋款。",
+        "_note": "由 hot_shoes.py 自动生成。查重只依据公众号后台已发表台账；本地稿件仅标注复用。",
         "updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "sources": [u for _, u in CATALOGS],
-        "excluded_written": dup,
+        "excluded_written": excluded_published,
+        "excluded_published": excluded_published,
+        "local_articles_marked": local_marked,
         "errors": errors,
         "candidates": picked,
     }
@@ -174,7 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress(100, f"完成，候选 {len(picked)} 双")
-    print(json.dumps({"status": "ok", "count": len(picked), "excluded_written": dup,
+    print(json.dumps({"status": "ok", "count": len(picked),
+                      "excluded_written": excluded_published,
+                      "excluded_published": excluded_published,
+                      "local_articles_marked": local_marked,
                       "errors": errors, "out": str(out)}, ensure_ascii=False))
     return 0
 

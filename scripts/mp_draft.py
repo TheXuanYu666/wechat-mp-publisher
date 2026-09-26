@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import json
 import re
@@ -127,7 +128,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"logged_in": False, "error": str(exc)[:120]}, ensure_ascii=False))
         return 1
-    print(json.dumps({"logged_in": ok, "token": token}, ensure_ascii=False))
+    print(json.dumps({"logged_in": ok}, ensure_ascii=False))
     return 0 if ok else 1
 
 
@@ -142,9 +143,105 @@ def cmd_login(args: argparse.Namespace) -> int:
             ctx.close()
             print(json.dumps({"status": "login_required", "error": str(exc)}, ensure_ascii=False))
             return 8
-        print(json.dumps({"status": "ok", "token": token, "profile": str(PROFILE_DIR)},
+        print(json.dumps({"status": "ok", "profile": str(PROFILE_DIR)},
                          ensure_ascii=False, indent=2))
         ctx.close()
+    return 0
+
+
+def cmd_published(args: argparse.Namespace) -> int:
+    """从公众号后台“已发表内容”只读同步鞋类文章台账。"""
+    sp = need_playwright()
+    entries: list[dict[str, Any]] = []
+    try:
+        with profile_lock(timeout=60), sp() as pw:
+            ctx = open_ctx(pw, headless=bool(getattr(args, "headless", False)))
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            token = wait_login(page, args.timeout)
+            begin, total = 0, None
+            while total is None or begin < total:
+                url = (
+                    "https://mp.weixin.qq.com/cgi-bin/appmsgpublish?sub=list"
+                    f"&begin={begin}&count=20&token={token}&lang=zh_CN&f=json&ajax=1"
+                )
+                resp = ctx.request.get(url, timeout=60000)
+                data = resp.json()
+                base = data.get("base_resp") or {}
+                if resp.status != 200 or int(base.get("ret", 0) or 0) != 0:
+                    raise RuntimeError(f"已发表列表接口失败：HTTP {resp.status} / ret {base.get('ret')}")
+                raw_page = data.get("publish_page") or "{}"
+                publish_page = json.loads(raw_page) if isinstance(raw_page, str) else raw_page
+                rows = publish_page.get("publish_list") or []
+                total = int(publish_page.get("total_count", len(rows)) or len(rows))
+                if not rows:
+                    break
+                for row in rows:
+                    info = row.get("publish_info") or {}
+                    if isinstance(info, str):
+                        try:
+                            info = json.loads(info)
+                        except json.JSONDecodeError:
+                            continue
+                    sent_at = int((info.get("sent_info") or {}).get("time", 0) or 0)
+                    items = (info.get("appmsg_info") or info.get("appmsgex") or [])
+                    for item in items:
+                        if not isinstance(item, dict) or item.get("is_deleted"):
+                            continue
+                        title = str(item.get("title", "")).strip()
+                        parts = re.split(r"\s*[—–-]{2}\s*", title, maxsplit=1)
+                        if len(parts) != 2:
+                            continue
+                        column, shoe = parts[0].strip(), parts[1].strip()
+                        if not shoe or not ("跑鞋" in column or "篮球鞋" in column or "球鞋" in column):
+                            continue
+                        aliases = {
+                            shoe.replace(" ", ""), shoe.replace("°", ""),
+                            re.sub(r"[^\w]", "", shoe),
+                        }
+                        aliases.discard(shoe)
+                        url = str(item.get("content_url", "")).replace("http://", "https://")
+                        entries.append({
+                            "name": shoe,
+                            "aliases": sorted(x for x in aliases if x),
+                            "column": column,
+                            "published": (str(datetime.date.fromtimestamp(sent_at)) if sent_at else None),
+                            "url": url,
+                            "title": title,
+                            "confirmed": True,
+                        })
+                begin += len(rows)
+            ctx.close()
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"status": "sync_failed", "error": str(exc)[:240]}, ensure_ascii=False))
+        return 13
+
+    merged: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        key = re.sub(r"[^\w]", "", entry["name"]).lower()
+        old = merged.get(key)
+        if old and (old.get("published") or "9999") <= (entry.get("published") or "9999"):
+            continue
+        merged[key] = entry
+    final = sorted(merged.values(), key=lambda x: x.get("published") or "")
+    if not final:
+        print(json.dumps({"status": "empty", "error": "公众号后台没有读到鞋类已发表文章"}, ensure_ascii=False))
+        return 14
+
+    out = Path(args.out).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    synced_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    ledger = {
+        "_note": "已发文章台账，由公众号后台已发表列表自动同步。选题前强制更新。",
+        "source": "mp_backend_published",
+        "synced_at": synced_at,
+        "count": len(final),
+        "written": final,
+    }
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(out)
+    print(json.dumps({"status": "ok", "count": len(final), "synced_at": synced_at,
+                      "out": str(out)}, ensure_ascii=False))
     return 0
 
 
@@ -283,81 +380,146 @@ def collect_cdn_urls(page) -> list[str]:
         return []
 
 
-# 公众号新版编辑器是 ProseMirror（contenteditable），textarea#title 是隐藏占位元素。
-# 直接写 innerHTML 或往隐藏 textarea 塞值都不会进编辑器的数据模型，保存出来是空的。
-# 正确做法：标题用键盘输入，正文派发 paste 事件让 ProseMirror 自己解析 HTML。
-PASTE_JS = """(html) => {
-  const els = [...document.querySelectorAll('div.ProseMirror')].filter(e => e.offsetParent);
-  const body = els[1];
-  if (!body) return { ok: false, reason: 'body_editor_not_found', editors: els.length };
-  body.focus();
-  const dt = new DataTransfer();
-  dt.setData('text/html', html);
-  dt.setData('text/plain', '');
-  body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-  return { ok: true };
+# 公众号新版编辑器是 ProseMirror（contenteditable）。脚本构造的 ClipboardEvent
+# 已被新版编辑器忽略，execCommand 又会剥掉内联样式。微信组件公开的
+# EditorView.pasteHTML() 会走其 transformPastedHTML / handlePaste 插件链，能保留秀米排版。
+INSERT_HTML_JS = """(html) => {
+  const root = document.querySelector('.view.rich_media_content');
+  const body = root && root.querySelector('div.ProseMirror[contenteditable="true"]');
+  if (!root || !body) return { ok: false, reason: 'body_editor_not_found' };
+  let component = root.__vue__, view = null;
+  for (let i = 0; component && i < 8; i++, component = component.$parent) {
+    if (typeof component.getView !== 'function') continue;
+    const candidate = component.getView();
+    if (candidate && candidate.dom === body && typeof candidate.pasteHTML === 'function') {
+      view = candidate; break;
+    }
+  }
+  if (!view) return { ok: false, reason: 'editor_view_not_found' };
+  view.dispatch(view.state.tr.delete(0, view.state.doc.content.size));
+  view.focus();
+  const ok = view.pasteHTML(html);
+  return { ok: ok !== false, method: 'EditorView.pasteHTML' };
 }"""
 
 
+def inject_article_html(page, body_editor, html_text: str, attempts: int = 3) -> tuple[bool, int, dict]:
+    """写入后反查文字、真实图片和强调色；失败自动重试，绝不假报成功。"""
+    history: list[dict[str, Any]] = []
+    source_images = len(re.findall(r"<img\b", html_text, re.I))
+    need_blue = "rgb(95, 156, 239)" in html_text
+    need_orange = "rgb(249, 110, 87)" in html_text
+    chars = 0
+    for attempt in range(1, attempts + 1):
+        try:
+            result = page.evaluate(INSERT_HTML_JS, html_text)
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "reason": f"evaluate_failed: {str(exc)[:120]}"}
+        page.wait_for_timeout(3500)
+        try:
+            stats = body_editor.evaluate("""e => {
+              const styled = [...e.querySelectorAll('[style]')];
+              return {
+                chars: (e.innerText || '').length,
+                html_chars: (e.innerHTML || '').length,
+                images: e.querySelectorAll('img[src]').length,
+                blue: styled.filter(x => getComputedStyle(x).color === 'rgb(95, 156, 239)').length,
+                orange: styled.filter(x => getComputedStyle(x).color === 'rgb(249, 110, 87)').length
+              };
+            }""")
+            chars = int(stats.get("chars", 0))
+        except Exception as exc:  # noqa: BLE001
+            stats = {"chars": 0, "html_chars": 0, "images": 0, "blue": 0, "orange": 0}
+            result["readback_error"] = str(exc)[:120]
+            chars = 0
+        history.append({"attempt": attempt, **result, **stats})
+        complete = (
+            result.get("ok") and chars >= 200
+            and int(stats.get("images", 0)) >= source_images
+            and (not need_blue or int(stats.get("blue", 0)) > 0)
+            and (not need_orange or int(stats.get("orange", 0)) > 0)
+        )
+        if complete:
+            return True, chars, {"method": result.get("method"), "attempts": history}
+    return False, chars, {"reason": "content_or_style_readback_failed", "attempts": history}
+
+
 def set_original(page, author: str = "步界社") -> str:
-    """原创声明：文字原创 + 作者 + 白名单留空 + 快捷转载保持开启 + 同意协议 → 确定。"""
+    """原创声明：文字原创 + 作者 + 白名单留空 + 快捷转载开启 + 同意协议。"""
     step = "打开原创"
+    dlg = None
     try:
         page.locator("#js_original").first.click(timeout=15000)
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(3500)
         dlg = page.locator(".weui-desktop-dialog").filter(visible=True).last
 
         step = "选文字原创"
-        try:
+        radio = dlg.locator('input.js_original_type_radio[data-label="文字原创"]')
+        if radio.count():
+            radio.first.check(force=True)
+        else:
             dlg.locator('text="文字原创"').first.click(timeout=6000)
-            page.wait_for_timeout(1200)
-        except Exception:  # noqa: BLE001
-            pass
+        page.wait_for_timeout(800)
 
         step = "填作者"
-        try:
-            box = dlg.locator("input.weui-desktop-form__input").filter(visible=True).first
-            box.fill(author)
-            page.wait_for_timeout(800)
-        except Exception:  # noqa: BLE001
-            pass
+        author_box = dlg.locator('input[placeholder="请输入作者"]')
+        author_box.first.fill(author)
+        # 该旧控件只监听 keyup，不监听标准 input；方向键触发模型读取当前中文值。
+        author_box.first.press("ArrowLeft")
+        author_box.first.press("ArrowRight")
+        page.wait_for_timeout(500)
+        if author_box.first.input_value().strip() != author or f"{len(author)}/8" not in dlg.inner_text():
+            raise RuntimeError("作者字段内部模型未更新")
 
         step = "勾选协议"
-        try:
-            dlg.locator('text=/我已阅读并同意/').first.click(timeout=6000)
-            page.wait_for_timeout(1000)
-        except Exception:  # noqa: BLE001
-            pass
+        agreement = dlg.locator('input.weui-desktop-form__checkbox').last
+        if agreement.count() and not agreement.is_checked():
+            agreement.check(force=True)
+        page.wait_for_timeout(500)
 
-        step = "确定"
+        step = "确定并核验关闭"
         dlg.locator('button:has-text("确定")').filter(visible=True).first.click(timeout=10000)
-        page.wait_for_timeout(4000)
-        return "已声明原创（文字原创，快捷转载保持开启）"
+        dlg.wait_for(state="hidden", timeout=10000)
+        return "已声明原创（文字原创，作者已填，快捷转载保持开启）"
     except Exception as exc:  # noqa: BLE001
-        return f"原创声明失败于[{step}]：{str(exc)[:60]}"
+        if dlg is not None:
+            try:
+                dlg.locator('button:has-text("取消")').filter(visible=True).first.click(timeout=3000)
+            except Exception:  # noqa: BLE001
+                pass
+        return f"原创声明失败于[{step}]：{str(exc)[:100]}"
 
 
 def set_claim_source(page, text: str = "个人观点，仅供参考") -> str:
-    """创作来源选「个人观点，仅供参考」。"""
+    """创作来源选“个人观点，仅供参考”，并核验弹窗已关闭。"""
+    step = "打开创作来源"
+    dlg = None
     try:
-        page.locator("#js_claim_source_area").first.click(timeout=15000)
-        page.wait_for_timeout(4000)
+        page.locator(".js_claim_source_desc").filter(visible=True).first.click(timeout=15000)
+        page.wait_for_timeout(3000)
         dlg = page.locator(".weui-desktop-dialog").filter(visible=True).last
-        for kw in ("个人观点", text):
+        step = "选择个人观点"
+        chosen = False
+        for kw in (text, "个人观点"):
             try:
                 dlg.locator(f'text=/{kw}/').first.click(timeout=5000)
-                page.wait_for_timeout(1000)
+                chosen = True
                 break
             except Exception:  # noqa: BLE001
                 continue
-        try:
-            dlg.locator('button:has-text("确定")').filter(visible=True).first.click(timeout=8000)
-            page.wait_for_timeout(3000)
-        except Exception:  # noqa: BLE001
-            pass
+        if not chosen:
+            raise RuntimeError("找不到“个人观点，仅供参考”选项")
+        step = "确定并核验关闭"
+        dlg.locator('button:has-text("确认")').filter(visible=True).first.click(timeout=8000)
+        dlg.wait_for(state="hidden", timeout=10000)
         return "创作来源：个人观点，仅供参考"
     except Exception as exc:  # noqa: BLE001
-        return f"创作来源设置失败：{str(exc)[:60]}"
+        if dlg is not None:
+            try:
+                dlg.locator('button:has-text("取消")').filter(visible=True).first.click(timeout=3000)
+            except Exception:  # noqa: BLE001
+                pass
+        return f"创作来源设置失败于[{step}]：{str(exc)[:100]}"
 
 
 def set_cover(page, cover: Path) -> str:
@@ -427,23 +589,30 @@ def set_cover(page, cover: Path) -> str:
 
 
 def pick_album(page, name: str) -> str:
-    """按名字选合集。你号里的合集名是「跑鞋」「球鞋」，不是文章标题前缀。"""
+    """按名字选合集，并核验弹窗已关闭。"""
     step = "打开合集"
+    dlg = None
     try:
         page.locator(".js_article_tags_label").first.click(timeout=20000)
-        page.wait_for_timeout(5000)
-        step = "点选择框"
-        page.locator('input[placeholder="请选择合集"]').first.click(timeout=15000)
         page.wait_for_timeout(3500)
-        step = f"选项 {name}"
-        page.locator("li.select-opt-li", has_text=name).first.click(timeout=15000)
+        dlg = page.locator(".weui-desktop-dialog").filter(visible=True).last
+        step = "点选择框"
+        dlg.locator('input[placeholder="请选择合集"]').first.click(timeout=15000)
         page.wait_for_timeout(2000)
-        step = "点确认"
-        page.locator('.weui-desktop-dialog button:has-text("确认")').last.click(timeout=15000)
-        page.wait_for_timeout(3000)
+        step = f"选项 {name}"
+        page.locator("li.select-opt-li", has_text=name).filter(visible=True).first.click(timeout=15000)
+        page.wait_for_timeout(1000)
+        step = "确认并核验关闭"
+        dlg.locator('button:has-text("确认")').filter(visible=True).first.click(timeout=15000)
+        dlg.wait_for(state="hidden", timeout=10000)
         return f"已选合集{name}"
     except Exception as exc:  # noqa: BLE001
-        return f"选合集失败于[{step}]（不影响存草稿）：{str(exc)[:60]}"
+        if dlg is not None:
+            try:
+                dlg.locator('button:has-text("取消")').filter(visible=True).first.click(timeout=3000)
+            except Exception:  # noqa: BLE001
+                pass
+        return f"选合集失败于[{step}]：{str(exc)[:100]}"
 
 
 def draft_exists(page, token: str, title: str, ctx=None) -> bool:
@@ -524,15 +693,27 @@ def cmd_draft(args: argparse.Namespace) -> int:
             return 10
         page.wait_for_timeout(8000)
 
-        ed = page.locator("div.ProseMirror").filter(visible=True)
+        ed = page.locator('div.ProseMirror[contenteditable="true"]').filter(visible=True)
+        title_ed = page.locator('div.ProseMirror[data-placeholder*="标题"]').filter(visible=True)
+        body_ed = page.locator('.view.rich_media_content div.ProseMirror[contenteditable="true"]').filter(visible=True)
+        if not title_ed.count():
+            title_ed = ed.nth(0)
+        else:
+            title_ed = title_ed.first
+        if not body_ed.count():
+            body_ed = ed.nth(1)
+        else:
+            body_ed = body_ed.first
+
         filled: dict[str, Any] = {}
         if not args.content_only:
             if args.title:
                 try:
-                    ed.nth(0).click()
+                    title_ed.click()
+                    page.keyboard.press("Meta+A")
                     page.keyboard.type(args.title)
                     page.wait_for_timeout(800)
-                    filled["title"] = args.title[:6] in ed.nth(0).inner_text()
+                    filled["title"] = args.title[:6] in title_ed.inner_text()
                 except Exception:
                     filled["title"] = False
             for name, sel, val in (("author", "input#author", args.author),
@@ -547,18 +728,19 @@ def cmd_draft(args: argparse.Namespace) -> int:
         else:
             filled["skipped"] = "标题/作者/摘要留给用户"
 
-        try:
-            ed.nth(1).click()
-        except Exception:
-            pass
-        res = page.evaluate(PASTE_JS, html)
-        page.wait_for_timeout(5000)
-        chars = 0
-        try:
-            chars = len(ed.nth(1).inner_text())
-        except Exception:
-            pass
-        # 正文为空时公众号不会真正保存封面，所以封面与合集都放在贴完正文之后
+        injected, chars, inject_detail = inject_article_html(page, body_ed, html, attempts=3)
+        if not injected:
+            ctx.close()
+            print(json.dumps({
+                "status": "inject_failed",
+                "error": "正文未写入公众号编辑器，已自动重试 3 次；没有执行封面、合集或保存操作",
+                "detail": inject_detail,
+                "content_chars": chars,
+                "saved_draft": False,
+            }, ensure_ascii=False, indent=2))
+            return 11
+
+        # 只有正文回读成功后，才设置封面/原创/来源/合集并尝试保存。
         cover_state = "未指定"
         cv = getattr(args, "cover", "")
         if cv and Path(cv).expanduser().exists():
@@ -569,39 +751,59 @@ def cmd_draft(args: argparse.Namespace) -> int:
         claim_state = "未设置"
         if getattr(args, "claim_source", False):
             claim_state = set_claim_source(page)
-
         album_state = "未指定"
         if getattr(args, "album", ""):
             album_state = pick_album(page, args.album)
 
-        if not res.get("ok") or chars < 200:
+        metadata_errors = []
+        if cv and not cover_state.startswith("已设置封面"):
+            metadata_errors.append(cover_state)
+        if getattr(args, "original", False) and not original_state.startswith("已声明原创"):
+            metadata_errors.append(original_state)
+        if getattr(args, "claim_source", False) and not claim_state.startswith("创作来源："):
+            metadata_errors.append(claim_state)
+        if getattr(args, "album", "") and not album_state.startswith("已选合集"):
+            metadata_errors.append(album_state)
+        if metadata_errors:
             ctx.close()
-            print(json.dumps({"status": "inject_failed", "detail": res, "content_chars": chars},
-                             ensure_ascii=False, indent=2))
-            return 11
+            print(json.dumps({
+                "status": "metadata_failed",
+                "error": "；".join(metadata_errors),
+                "content_chars": chars,
+                "injection": inject_detail,
+                "saved_draft": False,
+            }, ensure_ascii=False, indent=2))
+            return 15
 
         saved = False
+        save_error = ""
         if args.save:
             try:
-                page.click('button:has-text("保存为草稿")')
+                visible_dialogs = page.locator(".weui-desktop-dialog").filter(visible=True).count()
+                if visible_dialogs:
+                    raise RuntimeError(f"仍有 {visible_dialogs} 个弹窗未关闭")
+                page.locator('button:has-text("保存为草稿")').filter(visible=True).last.click(timeout=30000)
                 page.wait_for_timeout(9000)
             except Exception as exc:  # noqa: BLE001
-                print(f"点击保存失败: {exc}", file=sys.stderr)
-            saved = draft_exists(page, token, args.title, ctx) if args.title else True
+                save_error = f"点击保存失败：{str(exc)[:160]}"
+                print(save_error, file=sys.stderr)
+            saved = draft_exists(page, token, args.title, ctx) if args.title else not save_error
 
 
         print(json.dumps({
             "status": "ok" if (saved or not args.save) else "save_unverified",
+            "error": "" if (saved or not args.save) else (save_error or "保存后未在草稿箱找到同名稿件"),
             "editor_url": url,
             "filled": filled,
             "content_chars": chars,
+            "injection": inject_detail,
             "album": album_state,
             "cover": cover_state,
             "original": original_state,
             "claim_source": claim_state,
             "saved_draft": saved,
             "verified_by": "草稿箱列表",
-            "note": "脚本不会点发表/群发；封面、原创声明、话题标签仍需手动。",
+            "note": "脚本绝不点击发表或群发；只有草稿箱列表出现同名稿件才返回保存成功。",
         }, ensure_ascii=False, indent=2))
         if not args.close:
             try:
@@ -622,6 +824,11 @@ def main(argv: list[str] | None = None) -> int:
 
     lg = sub.add_parser("login", help="首次扫码登录并缓存登录态")
     lg.set_defaults(func=cmd_login)
+
+    pub = sub.add_parser("published", help="从公众号后台同步已发表鞋款台账（只读）")
+    pub.add_argument("--out", required=True)
+    pub.add_argument("--headless", action="store_true", help="使用已有登录态，不弹窗口")
+    pub.set_defaults(func=cmd_published)
 
     up = sub.add_parser("upload", help="上传图片到素材库")
     up.add_argument("--image", action="append", required=True)

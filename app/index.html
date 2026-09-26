@@ -64,6 +64,24 @@
   #mask.on{ display:block; }
   iframe{ width:100%; height:560px; border:1px solid var(--line); border-radius:9px;
           background:#fff; margin-top:14px; }
+  .cover-editor{ display:none; position:relative; width:100%; aspect-ratio:2.35/1; margin-top:14px;
+        overflow:hidden; background:#f4f4f4; border:1px solid var(--line); border-radius:9px; user-select:none; }
+  .cover-editor>img{ display:block; width:100%; height:100%; pointer-events:none; }
+  .cover-box{ position:absolute; border:2px solid transparent; cursor:move; touch-action:none; z-index:2; }
+  .cover-box:hover{ border-color:rgba(31,146,117,.5); }
+  .cover-box.active{ border-color:var(--g); background:rgba(31,146,117,.06); z-index:4; }
+  .cover-box .cover-tag{ display:none; position:absolute; left:-2px; top:-25px; padding:1px 7px;
+        border-radius:5px 5px 0 0; background:var(--g); color:white; font-size:11px; white-space:nowrap; }
+  .cover-box.active .cover-tag{ display:block; }
+  .cover-handle{ display:none; position:absolute; right:-2px; bottom:-2px; width:15px; height:15px;
+        border:2px solid #fff; border-radius:50%; background:var(--g); cursor:nwse-resize; }
+  .cover-box.active .cover-handle{ display:block; }
+  .cover-tools{ display:none; margin-top:12px; padding:12px; border:1px solid var(--line);
+        border-radius:9px; background:#fbfdfc; }
+  .cover-tools button{ padding:6px 12px; font-size:13px; }
+  .cover-tools button.active{ background:#176f5b; box-shadow:0 0 0 2px rgba(31,146,117,.2); }
+  .cover-tools input[type=range]{ width:220px; accent-color:var(--g); }
+  .cover-scale{ min-width:52px; font-variant-numeric:tabular-nums; color:var(--g); font-weight:bold; }
   .warn{ background:#fff7f4; border-left:3px solid var(--orange); padding:10px 12px;
          border-radius:6px; font-size:13px; margin-bottom:14px; }
   .hint{ font-size:13px; color:#999; }
@@ -136,13 +154,35 @@
 
   <!-- 4 封面 -->
   <section class="page" id="pg4">
-    <h2>生成封面</h2>
-    <p class="lead">用第一张图（侧视图）自动去底，配社标与鞋名，画布 2350×1000。</p>
+    <h2>生成并调整封面</h2>
+    <p class="lead">先自动生成 2350×1000 高清封面，再选中鞋图、鞋名或社标拖动位置和大小。</p>
     <div class="row">
-      <button id="mkcover">生成封面</button>
+      <button id="mkcover">生成 / 重置封面</button>
       <span class="hint" id="coverMsg"></span>
     </div>
-    <img id="coverImg" style="display:none;width:100%;margin-top:14px;border:1px solid var(--line);border-radius:9px"/>
+    <div class="cover-editor" id="coverEditor">
+      <img id="coverImg" draggable="false"/>
+      <div class="cover-box" data-cover-el="logo"><span class="cover-tag">社标</span><i class="cover-handle"></i></div>
+      <div class="cover-box" data-cover-el="text"><span class="cover-tag">鞋名</span><i class="cover-handle"></i></div>
+      <div class="cover-box" data-cover-el="shoe"><span class="cover-tag">鞋图</span><i class="cover-handle"></i></div>
+    </div>
+    <div class="cover-tools" id="coverTools">
+      <div class="row" style="margin-bottom:10px">
+        <span class="hint">选中元素：</span>
+        <button data-cover-select="shoe">鞋图</button>
+        <button data-cover-select="text">鞋名</button>
+        <button data-cover-select="logo">社标</button>
+        <button class="ghost" id="coverReset">恢复默认</button>
+      </div>
+      <div class="row">
+        <span class="hint">大小：</span>
+        <button class="ghost" id="coverSmaller">－</button>
+        <input type="range" id="coverScale" min="0.25" max="1.6" step="0.01" value="1"/>
+        <button class="ghost" id="coverLarger">＋</button>
+        <span class="cover-scale" id="coverScaleValue">100%</span>
+      </div>
+      <div class="hint" style="margin-top:8px">拖动边框可移动；拖右下角圆点可缩放。松手后自动生成并保存高清封面。</div>
+    </div>
     <div class="nav"><button class="ghost" data-back="3">上一步</button>
       <button id="n4" disabled>下一步</button></div>
   </section>
@@ -179,7 +219,8 @@
 const $=s=>document.querySelector(s), mask=$('#mask');
 // 某个元素缺失时不要让整个脚本崩掉
 const on=(sel,ev,fn)=>{ const e=$(sel); if(e) e.addEventListener(ev,fn); };
-let images={}, picked=null, cands=[], slots=[], ready=false, cur=1;
+let images={}, picked=null, cands=[], slots=[], existingShoes=[], ready=false, cur=1;
+let coverLayout=null, coverCanvas=[2350,1000], coverSelected='shoe', coverBusy=false, coverGesture=null;
 
 function show(n){ cur=n;
   [1,2,3,4,5].forEach(i=>$('#pg'+i).classList.toggle('on', i===n));
@@ -204,13 +245,13 @@ function sync(){
               && !!$('#pubdate').value;
   $('#n2').disabled = !okp;
   $('#n3').disabled = Object.keys(images).length!==4;
-  if($('#coverImg').style.display==='block') $('#n4').disabled=false;
+  $('#n4').disabled = !coverLayout || coverBusy;
   $('#go').disabled = !ready || !picked;
   $('#draft').disabled = $('#preview').style.display==='none';
 }
 
 fetch('/api/context').then(r=>r.json()).then(c=>{
-  slots=c.slots; ready=!(c.problems||[]).length;
+  slots=c.slots; existingShoes=c.shoes||[]; ready=!(c.problems||[]).length;
   if(!ready) $('#problems').innerHTML='<div class="warn"><b>环境有问题：</b><br>'+
       c.problems.map(x=>'· '+x).join('<br>')+'</div>';
   const box=$('#slots');
@@ -230,9 +271,15 @@ fetch('/api/context').then(r=>r.json()).then(c=>{
   sync();
 });
 
-function renderCands(d){
+function renderCands(d,cached=false){
   cands=d.candidates||[]; const box=$('#cands'); box.innerHTML='';
-  $('#lead1').textContent = '最近比较火的候选（热度依据 RunRepeat 人气榜，已剔除写过的）· 更新于 '+(d.updated||'—');
+  const stamp=d.updated||'未知';
+  const pubInfo=d.published_count
+    ? ' · 已同步公众号已发 '+d.published_count+' 篇'+(d.published_synced_at?'（'+d.published_synced_at+'）':'')
+    : '';
+  $('#lead1').textContent = cached
+    ? '缓存候选（本次自动刷新失败）· 缓存于 '+stamp+pubInfo
+    : '最近比较火的候选（只按公众号已发表查重，本地稿件可复用）· 更新于 '+stamp+pubInfo;
   if(!cands.length){ box.innerHTML='<div class="hint">没搜到候选，点「重新搜索」再试。</div>'; return; }
   cands.forEach(c=>{
     const el=document.createElement('div'); el.className='cand';
@@ -252,7 +299,7 @@ async function runSearch(){
   picked=null; $('#cands').innerHTML=''; sync();
   $('#sbarWrap').style.display='block'; $('#smsg').style.display='block';
   $('#sbar').style.width='4%';
-  $('#smsg').innerHTML='<span class="spin"></span> 启动搜索…';
+  $('#smsg').innerHTML='<span class="spin"></span> 正在检查公众号登录并同步已发表内容…';
   $('#research').disabled=true;
   try{ await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }
   catch(e){ $('#smsg').innerHTML='<span class="bad">搜索启动失败：'+e+'</span>'; $('#research').disabled=false; return; }
@@ -260,13 +307,18 @@ async function runSearch(){
     let st; try{ st=await (await fetch('/api/search/status')).json(); }catch(e){ return; }
     $('#sbar').style.width=Math.max(4,st.pct)+'%';
     $('#smsg').innerHTML = st.done
-      ? (st.error? '<span class="bad">'+st.error+'</span>' : '<span class="ok">✅ 搜索完成</span>')
+      ? (st.error? '<span class="bad">❌ 自动刷新失败：'+st.error+'；下方显示的是旧缓存，可点「重新搜索」再试。</span>'
+                 : '<span class="ok">✅ 搜索完成，候选与更新时间已刷新</span>')
       : '<span class="spin"></span> '+st.msg;
     if(st.done){
       clearInterval(poll); $('#research').disabled=false;
-      const d=await (await fetch('/api/candidates')).json();
-      renderCands(d);
-      setTimeout(()=>{ $('#sbarWrap').style.display='none'; $('#smsg').style.display='none'; }, 1200);
+      try{
+        const d=await (await fetch('/api/candidates')).json();
+        renderCands(d,!!st.error);
+      }catch(e){
+        $('#smsg').innerHTML='<span class="bad">候选读取失败：'+e+'</span>';
+      }
+      if(!st.error) setTimeout(()=>{ $('#sbarWrap').style.display='none'; $('#smsg').style.display='none'; }, 1600);
     }
   }, 600);
 }
@@ -276,12 +328,12 @@ on('#useManual','click',async ()=>{
   const name=$('#manualShoe').value.trim();
   if(!name){ $('#manualMsg').innerHTML='<span class="bad">先写个鞋名</span>'; return; }
   const col=$('#manualCol').value;
-  // 已有稿件的话直接复用，避免重复写稿
-  let has=false;
+  // 自动热门候选会剔除已有稿件；手动输入时仍从素材盘清单识别并复用。
+  const key=s=>s.replace(/[\s\-_°%]/g,'').toLowerCase();
+  let has=existingShoes.some(s=>key(s)===key(name));
   try{
     const d=await (await fetch('/api/candidates')).json();
-    const hit=(d.candidates||[]).find(c=>
-      c.name.replace(/[\s\-_]/g,'').toLowerCase()===name.replace(/[\s\-_]/g,'').toLowerCase());
+    const hit=(d.candidates||[]).find(c=>key(c.name)===key(name));
     if(hit) has=!!hit.has_article;
   }catch(e){}
   picked={name, column:col, has_article:has, hot:'手动输入'};
@@ -298,23 +350,106 @@ $('#n1').onclick=()=>show(2);
 $('#n2').onclick=()=>show(3);
 $('#n3').onclick=()=>show(4);
 
-$('#mkcover').onclick=async ()=>{
-  lock(true); $('#coverMsg').innerHTML='<span class="spin"></span> 生成中…';
+const coverLimits={shoe:[.25,1.6],text:[.45,2],logo:[.25,1.5]};
+function coverClamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function selectCoverElement(name){
+  coverSelected=name;
+  document.querySelectorAll('.cover-box').forEach(x=>x.classList.toggle('active',x.dataset.coverEl===name));
+  document.querySelectorAll('[data-cover-select]').forEach(x=>x.classList.toggle('active',x.dataset.coverSelect===name));
+  const el=coverLayout&&coverLayout[name], lim=coverLimits[name];
+  if(el){ $('#coverScale').min=lim[0]; $('#coverScale').max=lim[1]; $('#coverScale').value=el.scale;
+    $('#coverScaleValue').textContent=Math.round(el.scale*100)+'%'; }
+}
+function updateCoverBoxes(){
+  if(!coverLayout) return;
+  const cw=coverCanvas[0],ch=coverCanvas[1];
+  document.querySelectorAll('.cover-box').forEach(box=>{
+    const e=coverLayout[box.dataset.coverEl]; if(!e) return;
+    box.style.left=(e.x/cw*100)+'%'; box.style.top=(e.y/ch*100)+'%';
+    box.style.width=(e.w/cw*100)+'%'; box.style.height=(e.h/ch*100)+'%';
+  });
+  selectCoverElement(coverSelected);
+}
+function applyCoverResult(j){
+  coverLayout=j.layout; coverCanvas=j.canvas||[2350,1000];
+  $('#coverEditor').style.display='block'; $('#coverTools').style.display='block';
+  const img=$('#coverImg'); img.onload=updateCoverBoxes; img.src='/api/cover/preview?t='+Date.now();
+  updateCoverBoxes(); sync();
+}
+async function redrawCover(layout,initial=false){
+  if(coverBusy) return false;
+  coverBusy=true; sync(); $('#coverMsg').innerHTML='<span class="spin"></span> 正在生成高清预览…';
   try{
-    const j=await (await fetch('/api/cover',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({shoe:picked.name, images:[images['01']]})})).json();
-    if(j.status==='ok'){
-      $('#coverMsg').innerHTML='<span class="ok">✅ 已生成，可继续</span>';
-      $('#coverImg').style.display='block';
-      $('#coverImg').src='/api/cover/preview?t='+Date.now();
-      $('#n4').disabled=false;
-    }else{
-      $('#coverMsg').innerHTML='<span class="bad">'+(j.error||JSON.stringify(j))+'</span>';
-    }
-  }catch(e){ $('#coverMsg').innerHTML='<span class="bad">'+e+'</span>'; }
-  lock(false);
+    const body={shoe:picked.name,layout:layout||{}};
+    if(initial) body.images=[images['01']];
+    const j=await (await fetch('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    if(j.status!=='ok') throw new Error(j.error||JSON.stringify(j));
+    applyCoverResult(j); $('#coverMsg').innerHTML='<span class="ok">✅ 调整已保存为高清封面</span>';
+    return true;
+  }catch(e){ $('#coverMsg').innerHTML='<span class="bad">'+e+'</span>'; return false; }
+  finally{ coverBusy=false; sync(); }
+}
+$('#mkcover').onclick=async ()=>{
+  lock(true); coverLayout=null; coverSelected='shoe';
+  await redrawCover(null,true); lock(false);
 };
+
+document.querySelectorAll('[data-cover-select]').forEach(b=>b.onclick=()=>selectCoverElement(b.dataset.coverSelect));
+document.querySelectorAll('.cover-box').forEach(box=>{
+  box.addEventListener('pointerdown',e=>{
+    if(!coverLayout||coverBusy) return;
+    e.preventDefault(); e.stopPropagation(); selectCoverElement(box.dataset.coverEl);
+    const cur=coverLayout[coverSelected];
+    coverGesture={name:coverSelected,mode:e.target.classList.contains('cover-handle')?'resize':'move',
+      sx:e.clientX,sy:e.clientY,start:{...cur}};
+    box.setPointerCapture(e.pointerId);
+  });
+  box.addEventListener('pointermove',e=>{
+    if(!coverGesture||coverGesture.name!==box.dataset.coverEl) return;
+    const rect=$('#coverEditor').getBoundingClientRect();
+    const dx=(e.clientX-coverGesture.sx)*coverCanvas[0]/rect.width;
+    const dy=(e.clientY-coverGesture.sy)*coverCanvas[1]/rect.height;
+    const g=coverGesture, el=coverLayout[g.name];
+    if(g.mode==='move'){
+      el.x=Math.round(coverClamp(g.start.x+dx,0,coverCanvas[0]-el.w));
+      el.y=Math.round(coverClamp(g.start.y+dy,0,coverCanvas[1]-el.h));
+    }else{
+      const lim=coverLimits[g.name], factor=Math.max((g.start.w+dx)/g.start.w,(g.start.h+dy)/g.start.h);
+      const scale=coverClamp(g.start.scale*factor,lim[0],lim[1]), ratio=scale/g.start.scale;
+      el.scale=scale; el.w=Math.round(g.start.w*ratio); el.h=Math.round(g.start.h*ratio);
+      el.x=coverClamp(el.x,0,coverCanvas[0]-el.w); el.y=coverClamp(el.y,0,coverCanvas[1]-el.h);
+    }
+    updateCoverBoxes();
+  });
+  const finish=async e=>{
+    if(!coverGesture||coverGesture.name!==box.dataset.coverEl) return;
+    coverGesture=null; try{box.releasePointerCapture(e.pointerId);}catch(_e){}
+    await redrawCover(coverLayout,false);
+  };
+  box.addEventListener('pointerup',finish); box.addEventListener('pointercancel',()=>{coverGesture=null;});
+});
+async function finishCoverGesture(){
+  if(!coverGesture) return;
+  coverGesture=null;
+  await redrawCover(coverLayout,false);
+}
+document.addEventListener('pointerup',finishCoverGesture);
+document.addEventListener('mouseup',finishCoverGesture);
+$('#coverScale').addEventListener('input',e=>{
+  if(!coverLayout) return; const el=coverLayout[coverSelected], scale=+e.target.value, ratio=scale/el.scale;
+  el.scale=scale; el.w=Math.round(el.w*ratio); el.h=Math.round(el.h*ratio);
+  el.x=coverClamp(el.x,0,coverCanvas[0]-el.w); el.y=coverClamp(el.y,0,coverCanvas[1]-el.h);
+  $('#coverScaleValue').textContent=Math.round(scale*100)+'%'; updateCoverBoxes();
+});
+$('#coverScale').addEventListener('change',()=>redrawCover(coverLayout,false));
+async function nudgeCoverScale(delta){
+  if(!coverLayout||coverBusy) return; const el=coverLayout[coverSelected],lim=coverLimits[coverSelected];
+  const next=coverClamp(Math.round((el.scale+delta)*100)/100,lim[0],lim[1]);
+  $('#coverScale').value=next; $('#coverScale').dispatchEvent(new Event('input')); await redrawCover(coverLayout,false);
+}
+$('#coverSmaller').onclick=()=>nudgeCoverScale(-.1); $('#coverLarger').onclick=()=>nudgeCoverScale(.1);
+$('#coverReset').onclick=async()=>{ if(coverBusy)return; coverSelected='shoe'; await redrawCover(null,false); };
+
 $('#n4').onclick=()=>show(5);
 ['low','high','pubdate'].forEach(id=>$('#'+id).addEventListener('input',sync));
 $('#pubdate').value = new Date(Date.now()+864e5).toISOString().slice(0,10);
@@ -444,7 +579,12 @@ $('#draft').onclick=async ()=>{
         log('<b class="ok">✅ 草稿已保存。</b>','ok');
         log('封面、合集、原创声明、创作来源都已自动设置，去后台点发表即可。','hint');
       }else{
-        log('⚠️ '+(st.error||'未完成')+'　去草稿箱看最新一条，内容通常已经存上了。','bad');
+        const status=(st.result||{}).status||'';
+        if(status==='inject_failed'){
+          log('❌ 正文没有写入编辑器，系统未执行保存。'+(st.error||'已自动重试 3 次仍失败')+'，请直接重试。','bad');
+        }else{
+          log('❌ 草稿未通过草稿箱核验：'+(st.error||'未确认保存')+'。不要按“可能已保存”处理，请重试。','bad');
+        }
       }
       lock(false);
     }
