@@ -101,10 +101,16 @@ def trim_bg(img: Image.Image, tol: int = 26) -> Image.Image:
 
 
 def split_runs(text: str) -> list[tuple[str, bool]]:
-    """把鞋名切成 (片段, 是否中文) 序列，中英分别用不同字体。"""
+    """把鞋名切成 (片段, 是否中文) 序列，中英分别用不同字体。
+    国产鞋（有中文字）里的数字用行楷（与中文协调），英文字母用Herculanum；
+    纯英文鞋的数字和字母都用Herculanum。
+    """
+    has_cjk = bool(CJK_RX.search(text))
     runs: list[tuple[str, bool]] = []
     for ch in text:
-        cjk = bool(CJK_RX.match(ch))
+        # 中文字符本身、或者是国产鞋里的数字，算"中文片段"用行楷；
+        # 国产鞋的英文字母、纯英文鞋的所有内容都算"英文片段"用Herculanum
+        cjk = bool(CJK_RX.match(ch)) or (has_cjk and ch.isdigit())
         if runs and runs[-1][1] == cjk:
             runs[-1] = (runs[-1][0] + ch, cjk)
         else:

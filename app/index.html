@@ -23,6 +23,10 @@
   @keyframes in{ from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
   h2{ font-size:17px; color:var(--g); margin:0 0 4px; }
   .lead{ font-size:13px; color:#999; margin:0 0 18px; }
+  .market-tabs{ display:flex; gap:8px; margin:12px 0 8px; padding:4px; width:max-content;
+        background:#eaf4ef; border-radius:11px; }
+  .market-tabs button{ padding:7px 18px; border-radius:8px; background:transparent; color:#598075; }
+  .market-tabs button.active{ background:#fff; color:var(--g); box-shadow:0 1px 5px rgba(0,0,0,.1); font-weight:bold; }
   .cands{ display:grid; gap:12px; }
   .cand{ display:flex; align-items:center; gap:14px; border:2px solid var(--line); border-radius:10px;
          padding:14px 16px; background:#fff; cursor:pointer; transition:.15s; }
@@ -100,7 +104,12 @@
   <!-- 1 选鞋 -->
   <section class="page on" id="pg1">
     <h2>选一双要测评的鞋</h2>
-    <p class="lead" id="lead1">正在搜索最近比较火的鞋…</p>
+    <div class="market-tabs" id="marketTabs">
+      <button data-market="overseas" class="active">国外跑鞋</button>
+      <button data-market="domestic">国产跑鞋</button>
+    </div>
+    <p class="hint" id="marketSource" style="margin:0 0 5px">数据源：RunRepeat 国外跑鞋人气榜</p>
+    <p class="lead" id="lead1">正在搜索最近比较火的国外跑鞋…</p>
     <div id="problems"></div>
     <div class="bar" id="sbarWrap"><i id="sbar"></i></div>
     <div class="hint" id="smsg" style="margin-bottom:14px"><span class="spin"></span> 启动搜索…</div>
@@ -219,7 +228,7 @@
 const $=s=>document.querySelector(s), mask=$('#mask');
 // 某个元素缺失时不要让整个脚本崩掉
 const on=(sel,ev,fn)=>{ const e=$(sel); if(e) e.addEventListener(ev,fn); };
-let images={}, picked=null, cands=[], slots=[], existingShoes=[], ready=false, cur=1;
+let images={}, picked=null, cands=[], slots=[], existingShoes=[], ready=false, cur=1, currentMarket='overseas';
 let coverLayout=null, coverCanvas=[2350,1000], coverSelected='shoe', coverBusy=false, coverGesture=null;
 
 function show(n){ cur=n;
@@ -273,13 +282,17 @@ fetch('/api/context').then(r=>r.json()).then(c=>{
 
 function renderCands(d,cached=false){
   cands=d.candidates||[]; const box=$('#cands'); box.innerHTML='';
-  const stamp=d.updated||'未知';
+  const domestic=currentMarket==='domestic', stamp=d.updated||'未知';
+  $('#marketSource').textContent=domestic
+    ? '数据源：国内全网搜索（近30天社交媒体、公众号与资讯内容）'
+    : '数据源：RunRepeat 国外跑鞋人气榜';
   const pubInfo=d.published_count
     ? ' · 已同步公众号已发 '+d.published_count+' 篇'+(d.published_synced_at?'（'+d.published_synced_at+'）':'')
     : '';
+  const label=domestic?'国产跑鞋':'国外跑鞋';
   $('#lead1').textContent = cached
-    ? '缓存候选（本次自动刷新失败）· 缓存于 '+stamp+pubInfo
-    : '最近比较火的候选（只按公众号已发表查重，本地稿件可复用）· 更新于 '+stamp+pubInfo;
+    ? label+'缓存候选（本次自动刷新失败）· 缓存于 '+stamp+pubInfo
+    : '最近比较火的'+label+'（只按公众号已发表查重）· 更新于 '+stamp+pubInfo;
   if(!cands.length){ box.innerHTML='<div class="hint">没搜到候选，点「重新搜索」再试。</div>'; return; }
   cands.forEach(c=>{
     const el=document.createElement('div'); el.className='cand';
@@ -295,14 +308,21 @@ function renderCands(d,cached=false){
   });
 }
 
-async function runSearch(){
+async function runSearch(market=currentMarket){
+  currentMarket=market==='domestic'?'domestic':'overseas';
+  document.querySelectorAll('[data-market]').forEach(b=>{ b.classList.toggle('active',b.dataset.market===currentMarket); b.disabled=true; });
   picked=null; $('#cands').innerHTML=''; sync();
   $('#sbarWrap').style.display='block'; $('#smsg').style.display='block';
   $('#sbar').style.width='4%';
+  $('#marketSource').textContent=currentMarket==='domestic'
+    ? '数据源：国内全网搜索（正在获取近30天国产跑鞋热度）'
+    : '数据源：RunRepeat 国外跑鞋人气榜';
   $('#smsg').innerHTML='<span class="spin"></span> 正在检查公众号登录并同步已发表内容…';
   $('#research').disabled=true;
-  try{ await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }
-  catch(e){ $('#smsg').innerHTML='<span class="bad">搜索启动失败：'+e+'</span>'; $('#research').disabled=false; return; }
+  try{ await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({market:currentMarket})}); }
+  catch(e){ $('#smsg').innerHTML='<span class="bad">搜索启动失败：'+e+'</span>'; $('#research').disabled=false;
+    document.querySelectorAll('[data-market]').forEach(b=>b.disabled=false); return; }
   const poll=setInterval(async()=>{
     let st; try{ st=await (await fetch('/api/search/status')).json(); }catch(e){ return; }
     $('#sbar').style.width=Math.max(4,st.pct)+'%';
@@ -312,8 +332,9 @@ async function runSearch(){
       : '<span class="spin"></span> '+st.msg;
     if(st.done){
       clearInterval(poll); $('#research').disabled=false;
+      document.querySelectorAll('[data-market]').forEach(b=>b.disabled=false);
       try{
-        const d=await (await fetch('/api/candidates')).json();
+        const d=await (await fetch('/api/candidates?market='+currentMarket)).json();
         renderCands(d,!!st.error);
       }catch(e){
         $('#smsg').innerHTML='<span class="bad">候选读取失败：'+e+'</span>';
@@ -322,17 +343,18 @@ async function runSearch(){
     }
   }, 600);
 }
-$('#research').onclick=runSearch;
+$('#research').onclick=()=>runSearch(currentMarket);
+document.querySelectorAll('[data-market]').forEach(b=>b.onclick=()=>{ if(!b.disabled) runSearch(b.dataset.market); });
 
 on('#useManual','click',async ()=>{
   const name=$('#manualShoe').value.trim();
   if(!name){ $('#manualMsg').innerHTML='<span class="bad">先写个鞋名</span>'; return; }
   const col=$('#manualCol').value;
-  // 自动热门候选会剔除已有稿件；手动输入时仍从素材盘清单识别并复用。
+  // 自动候选只剔除公众号已发表；手动输入仍从素材盘清单识别并复用已有稿件。
   const key=s=>s.replace(/[\s\-_°%]/g,'').toLowerCase();
   let has=existingShoes.some(s=>key(s)===key(name));
   try{
-    const d=await (await fetch('/api/candidates')).json();
+    const d=await (await fetch('/api/candidates?market='+currentMarket)).json();
     const hit=(d.candidates||[]).find(c=>key(c.name)===key(name));
     if(hit) has=!!hit.has_article;
   }catch(e){}
@@ -344,7 +366,7 @@ on('#useManual','click',async ()=>{
 });
 
 on('#manualShoe','input',()=>{ $('#manualMsg').textContent=''; });
-runSearch();
+runSearch('overseas');
 
 $('#n1').onclick=()=>show(2);
 $('#n2').onclick=()=>show(3);

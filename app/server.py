@@ -27,6 +27,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 SKILL = Path(__file__).resolve().parent.parent
 SCRIPTS = SKILL / "scripts"
@@ -41,8 +42,20 @@ def outline_for(column: str) -> Path:
     if ("篮球" in (column or "") or "球鞋" in (column or "")) and OUTLINE_BB.exists():
         return OUTLINE_BB
     return OUTLINE
-CANDS = SKILL / "references" / "candidates.json"
+CANDS = SKILL / "references" / "candidates.json"  # 旧版兼容缓存
+CANDIDATE_FILES = {
+    "overseas": SKILL / "references" / "candidates_overseas.json",
+    "domestic": SKILL / "references" / "candidates_domestic.json",
+}
 PUBLISHED = SKILL / "references" / "published.json"
+
+
+def market_name(value: str) -> str:
+    return "domestic" if value == "domestic" else "overseas"
+
+
+def candidates_file(market: str) -> Path:
+    return CANDIDATE_FILES[market_name(market)]
 sys.path.insert(0, str(SKILL))
 from config import CFG, assets_root  # noqa: E402
 
@@ -589,13 +602,16 @@ def do_write(shoe: str, column: str) -> None:
 # ---- 热度搜索（后台线程 + 进度轮询）----
 SEARCH: dict[str, Any] = {"running": False, "pct": 0, "msg": "未开始", "done": False,
                           "error": "", "detail": "", "published_count": 0,
-                          "published_synced_at": ""}
+                          "published_synced_at": "", "market": "overseas"}
 
 
-def do_search() -> None:
-    """先登录并同步后台已发表文章，再搜热门候选并查重。"""
+def do_search(market: str = "overseas") -> None:
+    """先登录并同步后台已发表文章，再按国外/国产来源搜索并查重。"""
+    market = market_name(market)
+    target = candidates_file(market)
+    label = "国产跑鞋" if market == "domestic" else "国外跑鞋"
     SEARCH.update(running=True, pct=0, msg="检查公众号登录态…", done=False, error="",
-                  detail="", published_count=0, published_synced_at="")
+                  detail="", published_count=0, published_synced_at="", market=market)
     try:
         if not login_ok(timeout=12):
             SEARCH.update(pct=3, msg="公众号登录已过期，已弹出扫码窗口，请扫码…")
@@ -615,10 +631,11 @@ def do_search() -> None:
             )
         SEARCH["published_count"] = int(synced.get("count", 0) or 0)
         SEARCH["published_synced_at"] = str(synced.get("synced_at", ""))
-        SEARCH.update(pct=20, msg=f"已同步已发表 {SEARCH['published_count']} 篇，开始搜索热门鞋…")
+        SEARCH.update(pct=20, msg=f"已同步已发表 {SEARCH['published_count']} 篇，开始搜索{label}…")
 
         proc = subprocess.Popen(
-            [str(PY), str(SCRIPTS / "hot_shoes.py"), "--out", str(CANDS), "--limit", "5"],
+            [str(PY), str(SCRIPTS / "hot_shoes.py"), "--market", market,
+             "--out", str(target), "--limit", "5"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             errors="replace", env=ENV)
         tail: list[str] = []
@@ -697,9 +714,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(SEARCH)
             return
         if self.route == "/api/candidates":
-            data = {"candidates": []}
-            if CANDS.exists():
-                data = json.loads(CANDS.read_text(encoding="utf-8"))
+            market = market_name((parse_qs(urlsplit(self.path).query).get("market") or ["overseas"])[0])
+            source = candidates_file(market)
+            if market == "overseas" and not source.exists() and CANDS.exists():
+                source = CANDS
+            data = {"candidates": [], "market": market}
+            if source.exists():
+                data = json.loads(source.read_text(encoding="utf-8"))
             out = []
             for c in data.get("candidates", []):
                 wd, has = resolve_workdir(c.get("name", ""))
@@ -711,6 +732,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:  # noqa: BLE001
                     ledger = {}
             self._json({"updated": data.get("updated", ""), "candidates": out,
+                        "market": market, "source_name": data.get("source_name", ""),
                         "excluded_written": data.get("excluded_written", 0),
                         "excluded_published": data.get("excluded_published", 0),
                         "local_articles_marked": data.get("local_articles_marked", 0),
@@ -774,9 +796,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"started": True})
             return
         if self.route == "/api/search":
-            if not SEARCH["running"]:
-                threading.Thread(target=do_search, daemon=True).start()
-            self._json({"started": True})
+            market = market_name(str(payload.get("market", "overseas")))
+            started = not SEARCH["running"]
+            if started:
+                threading.Thread(target=do_search, args=(market,), daemon=True).start()
+            self._json({"started": started, "market": market,
+                        "busy_market": SEARCH.get("market") if not started else ""})
             return
         if self.route == "/api/cover":
             global PIPE

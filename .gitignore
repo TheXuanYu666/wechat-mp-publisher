@@ -17,5 +17,6 @@ references/style_profile.json
 references/style_profile.md
 references/published.json
 references/candidates.json
+references/candidates_*.json
 references/footer_defaults.json
 config.json
