@@ -323,9 +323,18 @@ def main(argv: list[str] | None = None) -> int:
             if actual_num != w["num"] or g.get("title") != w["title"]:
                 blocking.append(f"第 {i+1} 节是「{actual_num} {g.get('title')}」，"
                                 f"应为「{w['num']} {w['title']}」")
-            subs = [b.get("text") or b.get("title") 
-                    for b in (g.get("blocks", []) or g.get("content", [])) 
-                    if b.get("type") == "sub"]
+            
+            # Extract subsection titles - support both structures
+            subs = []
+            # Old structure: blocks with type=="sub"
+            for b in (g.get("blocks", []) or g.get("content", [])):
+                if b.get("type") == "sub":
+                    subs.append(b.get("text") or b.get("title"))
+            # New structure: subsections[] array
+            for sub in g.get("subsections", []):
+                if sub.get("type") == "sub":
+                    subs.append(sub.get("title") or sub.get("text"))
+            
             if subs != w["subs"]:
                 blocking.append(f"{w['num']} 子标题 {subs}，应为 {w['subs']}")
 
