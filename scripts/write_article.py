@@ -213,10 +213,10 @@ def main(argv: list[str] | None = None) -> int:
     if art.exists():
         try:
             a = json.loads(art.read_text(encoding="utf-8"))
-            if len(a.get("sections", [])) != 6:
-                problems.append(f"章节数 {len(a.get('sections', []))}，应为 6")
-            imgs = sum(1 for s in a.get("sections", []) for b in s.get("blocks", [])
-                       if b.get("type") == "img")
+            sections = [b for b in a.get("blocks", []) if b.get("type") == "section"]
+            if len(sections) != 6:
+                problems.append(f"章节数 {len(sections)}，应为 6")
+            imgs = sum(1 for b in a.get("blocks", []) if "img" in b)
             if imgs != 4:
                 problems.append(f"图片位 {imgs} 个，应为 4")
         except Exception as exc:  # noqa: BLE001
