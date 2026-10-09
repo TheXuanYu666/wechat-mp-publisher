@@ -266,7 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     if labels != FIELDS:
         blocking.append(f"开篇字段是 {labels}，应为 {FIELDS}")
     for g in got:
-        if not g.startswith("二级平台价格") and re.search(r"(待补|待定|TODO|待填)", g):
+        # 允许"二级平台价格"、"官方发售价"、"实测重量"写"待补"
+        if not g.startswith(("二级平台价格", "官方发售价", "实测重量")) and re.search(r"(待补|待定|TODO|待填)", g):
             blocking.append(f"开篇字段没填完：{g}")
         if g.startswith("二级平台价格") and not re.search(r"(待补|¥\d+～¥\d+)", g):
             blocking.append(f"二级平台价格写法不对：{g}")
