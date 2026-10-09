@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""搜最近比较火的鞋，生成候选表（references/candidates.json）。
+"""Search trending shoes and generate candidate list (references/candidates.json).
 
-数据源按可靠性排序：
-  1. RunRepeat 分类榜（公开可抓，带人气排序）—— 跑鞋 + 篮球鞋
-  2. istarshine 热榜（需要 ISTARSHINE_API_KEY，服务不稳时自动跳过）
-再用 published.json 剔除已经写过的鞋款。
+Data sources by reliability:
+  1. RunRepeat category rankings (public scraping, popularity-sorted) — Running + Basketball
+  2. istarshine domestic trending (requires ISTARSHINE_API_KEY, auto-skip if unstable)
+Excludes already-written shoes from published.json.
 
-进度会按行输出 `PROGRESS <pct> <说明>`，方便调用方做进度条。
+Progress output per line: `PROGRESS <pct> <message>` for caller progress bar.
 
-用法:
+Usage:
   hot_shoes.py --market overseas --out references/candidates_overseas.json --limit 6
   hot_shoes.py --market domestic --out references/candidates_domestic.json --limit 6
+
+搜最近比较火的鞋，生成候选表。国外用 RunRepeat 榜单，国产用 istarshine 全网热度。
+进度按行输出 `PROGRESS <pct> <说明>`，方便调用方做进度条。
 """
 from __future__ import annotations
 

@@ -101,9 +101,12 @@ def trim_bg(img: Image.Image, tol: int = 26) -> Image.Image:
 
 
 def split_runs(text: str) -> list[tuple[str, bool]]:
-    """把鞋名切成 (片段, 是否中文) 序列，中英分别用不同字体。
-    国产鞋（有中文字）里的数字用行楷（与中文协调），英文字母用Herculanum；
-    纯英文鞋的数字和字母都用Herculanum。
+    """Split shoe name into (segment, is_CJK) tuples for different fonts.
+    Domestic shoes (with CJK): digits use Xingkai (harmonize with Chinese), English letters use Herculanum.
+    Overseas shoes: all digits and letters use Herculanum.
+
+    把鞋名切成(片段,是否中文)序列，中英分别用不同字体。
+    国产鞋数字用行楷与中文协调，英文字母用Herculanum；纯英文鞋全用Herculanum。
     """
     has_cjk = bool(CJK_RX.search(text))
     runs: list[tuple[str, bool]] = []
