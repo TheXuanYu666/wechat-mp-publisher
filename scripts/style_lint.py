@@ -85,15 +85,69 @@ FIELDS = ["测评鞋款", "产品定位", "官方发售价", "二级平台价格
 
 
 def texts(a: dict[str, Any]) -> list[tuple[str, str]]:
+    """Extract all text content from article for linting.
+    
+    Supports both old structure (sections[].blocks[]) and new structure (blocks[].content[]).
+    """
     out = []
-    for s in a.get("sections", []):
-        tag = f"{s.get('num')}{s.get('title')}"
-        for b in s.get("blocks", []):
-            if b.get("text"):
-                out.append((tag, b["text"]))
-            for x in b.get("items", []):
-                out.append((tag, str(x)))
+    # Try new structure first (blocks[])
+    if "blocks" in a and not "sections" in a:
+        for s in a.get("blocks", []):
+            if s.get("type") != "section":
+                continue
+            tag = f"{s.get('heading')}{s.get('title')}"
+            for b in s.get("content", []):
+                if b.get("text"):
+                    out.append((tag, b["text"]))
+                if b.get("items"):
+                    for x in b["items"]:
+                        out.append((tag, str(x)))
+            # Also check subsections
+            for sub in s.get("subsections", []):
+                for b in sub.get("content", []):
+                    if b.get("text"):
+                        out.append((tag, b["text"]))
+                    if b.get("items"):
+                        for x in b["items"]:
+                            out.append((tag, str(x)))
+    else:
+        # Old structure (sections[])
+        for s in a.get("sections", []):
+            tag = f"{s.get('num')}{s.get('title')}"
+            for b in s.get("blocks", []):
+                if b.get("text"):
+                    out.append((tag, b["text"]))
+                for x in b.get("items", []):
+                    out.append((tag, str(x)))
     return out
+
+
+def get_sections(a: dict[str, Any]) -> list[dict[str, Any]]:
+    """Get sections from article, handling both old and new structure.
+    
+    Returns normalized sections with: heading/num, title, content/blocks, img (if present).
+    """
+    if "blocks" in a and not "sections" in a:
+        # New structure: extract section blocks
+        sections = []
+        for s in a.get("blocks", []):
+            if s.get("type") == "section":
+                # Normalize: heading->num, content->blocks, preserve img
+                normalized = {
+                    "num": s.get("heading"),
+                    "heading": s.get("heading"),
+                    "title": s.get("title"),
+                    "blocks": s.get("content", []),
+                    "content": s.get("content", []),
+                    "subsections": s.get("subsections", []),
+                }
+                if "img" in s:
+                    normalized["img"] = s["img"]
+                sections.append(normalized)
+        return sections
+    else:
+        # Old structure
+        return a.get("sections", [])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,8 +202,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3.5 逐段检查：不能靠全篇总数掩盖某些段落完全漏标。
     # 02–04 都是测评正文；05 的尺码建议是中性信息，其余是评价内容。
-    for sec in a.get("sections", []):
-        num = str(sec.get("num", "")).zfill(2)
+    for sec in get_sections(a):
+        num = str(sec.get("num", "") or sec.get("heading", "")).zfill(2)
         if num not in ("02", "03", "04", "05"):
             continue
         for bi, b in enumerate(sec.get("blocks", [])):
@@ -190,21 +244,22 @@ def main(argv: list[str] | None = None) -> int:
                 break
 
     # 4.5 优缺点区域不得标色（历史文章这两段没有彩色字）
-    for sec in a.get("sections", []):
+    for sec in get_sections(a):
         mode = None
-        for b in sec.get("blocks", []):
+        for b in sec.get("blocks", []) or sec.get("content", []):
             if b.get("type") == "sub":
-                mode = b.get("text")
+                mode = b.get("text") or b.get("title")
                 continue
             if mode in ("优点", "缺点") and b.get("text"):
                 if POS_RX.search(b["text"]) or NEG_RX.search(b["text"]):
-                    blocking.append(f"[{sec.get('num')}{mode}] 这一段不应标颜色："
+                    blocking.append(f"[{sec.get('num') or sec.get('heading')}{mode}] 这一段不应标颜色："
                                     f"{b['text'][:40]}")
 
     # 5 开篇 5 字段
-    first = (a.get("sections") or [{}])[0]
-    got = [str(x) for b in first.get("blocks", []) if b.get("type") == "fields"
-           for x in b.get("items", [])]
+    sections = get_sections(a)
+    first = sections[0] if sections else {}
+    got = [str(x) for b in (first.get("blocks", []) or first.get("content", [])) 
+           if b.get("type") == "fields" for x in b.get("items", [])]
     labels = [g.split("：")[0] for g in got]
     if labels != FIELDS:
         blocking.append(f"开篇字段是 {labels}，应为 {FIELDS}")
@@ -223,7 +278,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 7 评分维度
     column = a.get("column", "")
-    scores = [str(x) for s in a.get("sections", []) for b in s.get("blocks", [])
+    scores = [str(x) for s in get_sections(a) 
+              for b in (s.get("blocks", []) or s.get("content", []))
               if b.get("type") == "scores" for x in b.get("items", [])]
     if scores:
         n = len(scores) - 1  # 去掉综合得分
@@ -241,8 +297,15 @@ def main(argv: list[str] | None = None) -> int:
         blocking.append("缺少评分块")
 
     # 8 图片位
-    imgs = sum(1 for s in a.get("sections", []) for b in s.get("blocks", [])
-               if b.get("type") == "img")
+    imgs = 0
+    for s in get_sections(a):
+        # Check top-level img in section
+        if "img" in s:
+            imgs += 1
+        # Check img blocks in content
+        for b in (s.get("blocks", []) or s.get("content", [])):
+            if b.get("type") == "img":
+                imgs += 1
     if imgs != 4:
         blocking.append(f"图片位 {imgs} 个，应为 4 个")
 
@@ -250,16 +313,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.outline and Path(args.outline).exists():
         o = json.loads(Path(args.outline).read_text(encoding="utf-8"))
         want = o.get("sections", [])
-        got_s = a.get("sections", [])
+        got_s = get_sections(a)
         for i, w in enumerate(want):
             if i >= len(got_s):
                 blocking.append(f"缺少章节 {w['num']} {w['title']}")
                 continue
             g = got_s[i]
-            if str(g.get("num")) != w["num"] or g.get("title") != w["title"]:
-                blocking.append(f"第 {i+1} 节是「{g.get('num')} {g.get('title')}」，"
+            actual_num = str(g.get("num") or g.get("heading"))
+            if actual_num != w["num"] or g.get("title") != w["title"]:
+                blocking.append(f"第 {i+1} 节是「{actual_num} {g.get('title')}」，"
                                 f"应为「{w['num']} {w['title']}」")
-            subs = [b["text"] for b in g.get("blocks", []) if b.get("type") == "sub"]
+            subs = [b.get("text") or b.get("title") 
+                    for b in (g.get("blocks", []) or g.get("content", [])) 
+                    if b.get("type") == "sub"]
             if subs != w["subs"]:
                 blocking.append(f"{w['num']} 子标题 {subs}，应为 {w['subs']}")
 
