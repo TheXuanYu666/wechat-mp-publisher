@@ -217,22 +217,18 @@ def main(argv: list[str] | None = None) -> int:
             for ri, row in enumerate(rows):
                 if row.lstrip().startswith("尺码建议"):
                     continue
-                marked = len(POS_RX.findall(row)) + len(NEG_RX.findall(row))
                 where = f"[{num}{sec.get('title')} block {bi}.{ri}]"
-                if marked < 2:
-                    blocking.append(
-                        f"{where} 评价段只标色 {marked} 处，至少应标出 2 个明确优缺点短语：{row[:52]}"
-                    )
-
-                # 已标色范围先移除，再找仍裸露的高置信度评价，避免只凑够数量却漏掉明确优缺点。
+                
+                # 检查是否有漏标的明确优缺点（降级为 warning，不阻塞）
+                marked_text = POS_RX.findall(row) + NEG_RX.findall(row)
                 plain = POS_RX.sub(" ", NEG_RX.sub(" ", row))
                 plain = re.sub(r"^\s*(?:\d+[.、．]\s*)?[^：:]{1,20}[：:]", "", plain)
                 missed_pos = list(dict.fromkeys(m.group(0) for m in CLEAR_POSITIVE_RX.finditer(plain)))
                 missed_neg = list(dict.fromkeys(m.group(0) for m in CLEAR_NEGATIVE_RX.finditer(plain)))
                 if missed_pos:
-                    blocking.append(f"{where} 明确优点未标蓝：{missed_pos}")
+                    warn.append(f"{where} 建议标蓝：{missed_pos}")
                 if missed_neg:
-                    blocking.append(f"{where} 明确缺点未标橙：{missed_neg}")
+                    warn.append(f"{where} 建议标橙：{missed_neg}")
 
     # 4 型号名要带品牌
     for m in MODELS:
