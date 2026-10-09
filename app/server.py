@@ -945,19 +945,51 @@ def do_generate(p: dict[str, Any]) -> None:
             PIPE.set_image_urls({k: v for k, v in got.items() if k in ("01", "02", "03", "04")})
             gen_step("回填图片地址", True, sorted(got))
 
-        GEN.update(pct=82, stage="事实核查")
-        fc = PIPE.fact_check()
-        gen_step("事实核查", fc["blocking_count"] == 0, fc)
-        if fc["blocking_count"]:
-            GEN.update(running=False, done=True, ok=False, pct=100)
-            return
-
-        GEN.update(pct=90, stage="文风与格式检查")
-        sl = PIPE.style_lint()
-        gen_step("文风与格式检查", sl["blocking_count"] == 0, sl)
-        if sl["blocking_count"]:
-            GEN.update(running=False, done=True, ok=False, pct=100)
-            return
+        # 验证循环：事实核查 + 文风检查，失败时自动重新生成（最多2次）
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            GEN.update(pct=82, stage="事实核查" + (f"（第{attempt+1}次尝试）" if attempt > 0 else ""))
+            fc = PIPE.fact_check()
+            fc_ok = fc["blocking_count"] == 0
+            gen_step("事实核查", fc_ok, fc)
+            
+            GEN.update(pct=90, stage="文风与格式检查" + (f"（第{attempt+1}次尝试）" if attempt > 0 else ""))
+            sl = PIPE.style_lint()
+            sl_ok = sl["blocking_count"] == 0
+            gen_step("文风与格式检查", sl_ok, sl)
+            
+            if fc_ok and sl_ok:
+                break  # 验证通过，继续流程
+            
+            if attempt < max_retries:
+                # 还有重试机会，删除旧稿件并重新生成
+                retry_msg = f"验证未通过，自动重新生成（{attempt+1}/{max_retries}）"
+                gen_step("自动重试", True, retry_msg)
+                GEN.update(pct=10, stage=retry_msg)
+                
+                # 删除旧的 article.json 和 claims.json
+                art = PIPE.d / "article.json"
+                cl = PIPE.d / "claims.json"
+                if art.exists():
+                    art.unlink()
+                if cl.exists():
+                    cl.unlink()
+                
+                # 重新生成
+                do_write(shoe, column)
+                if WRITE.get("error"):
+                    gen_step("重新写稿", False, WRITE["error"])
+                    GEN.update(running=False, done=True, ok=False, pct=100)
+                    return
+                gen_step("重新写稿", True, "已重新生成 article.json 与 claims.json")
+                
+                # 重新加载 Pipeline
+                PIPE = Pipeline(wd, column)
+            else:
+                # 重试次数用完，报告失败
+                gen_step("验证失败", False, f"已尝试 {max_retries+1} 次，仍有问题，请检查上面的报错")
+                GEN.update(running=False, done=True, ok=False, pct=100)
+                return
 
         GEN.update(pct=96, stage="排版渲染")
         rd = PIPE.render()
