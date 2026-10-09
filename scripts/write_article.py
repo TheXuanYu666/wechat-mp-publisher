@@ -109,6 +109,22 @@ PROMPT = """请为公众号「RDFZ 步界社」写一篇 {column} 测评，鞋�
   {workdir}/claims.json
   {workdir}/article.json
 
+article.json 必须使用以下结构（参考 {skill}/references/outline_running.json）：
+{{
+  "column": "{column}",
+  "shoe": "{shoe}",
+  "title": "...",
+  "account": "RDFZ 步界社",
+  "digest": "...",
+  "sections": [
+    {{"num": "01", "title": "开篇简介", "blocks": [...]}},
+    ...
+  ],
+  "footer": {{"tester": "{tester}", "editor": "{tester}", "date": "..."}},
+  "unsourced_ok": [...]
+}}
+注意：顶层用 "sections" 数组，每个 section 有 "num"（不是 "heading"）和 "blocks"（不是 "content"）。
+
 写完后跑一次核查确认 blocking 为 0：
   {py} {skill}/scripts/fact_check.py --article {workdir}/article.json \\
     --claims {workdir}/claims.json --report {workdir}/tmp/factcheck.json --min-sources 2
