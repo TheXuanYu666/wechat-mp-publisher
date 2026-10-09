@@ -109,7 +109,7 @@ PROMPT = """请为公众号「RDFZ 步界社」写一篇 {column} 测评，鞋�
   {workdir}/claims.json
   {workdir}/article.json
 
-article.json 必须使用以下结构（参考 {skill}/references/outline_running.json）：
+article.json 必须使用以下结构（参考 {skill}/references/outline_running.json 和已发表文章）：
 {{
   "column": "{column}",
   "shoe": "{shoe}",
@@ -117,13 +117,37 @@ article.json 必须使用以下结构（参考 {skill}/references/outline_runnin
   "account": "RDFZ 步界社",
   "digest": "...",
   "sections": [
-    {{"num": "01", "title": "开篇简介", "blocks": [...]}},
-    ...
+    {{
+      "num": "01",
+      "title": "开篇简介",
+      "blocks": [
+        {{"type": "img", "url": "TODO_上传素材库后回填", "alt": "..."}},
+        {{"type": "fields", "items": ["测评鞋款：...", "产品定位：...", ...]}},
+        {{"type": "p", "text": "..."}}
+      ]
+    }},
+    {{
+      "num": "02",
+      "title": "外观设计与做工",
+      "blocks": [
+        {{"type": "img", "url": "TODO_上传素材库后回填", "alt": "..."}},
+        {{"type": "sub", "text": "鞋面"}},
+        {{"type": "p", "text": "..."}},
+        {{"type": "sub", "text": "后跟与鞋舌"}},
+        {{"type": "p", "text": "..."}}
+      ]
+    }},
+    ...共6个section
   ],
   "footer": {{"tester": "{tester}", "editor": "{tester}", "date": "..."}},
   "unsourced_ok": [...]
 }}
-注意：顶层用 "sections" 数组，每个 section 有 "num"（不是 "heading"）和 "blocks"（不是 "content"）。
+
+关键规则：
+- 顶层只有 6 个 sections（num 为 "01" 到 "06"）
+- 每个 section 内的 blocks 数组包含该章节的全部内容（图片、子标题、段落等）
+- 子标题是 {{"type": "sub", "text": "子标题名"}}，放在 blocks 里，不要为每个子标题创建新 section
+- 每个 section 有 "num"（不是 "heading"）和 "blocks"（不是 "content"）
 
 写完后跑一次核查确认 blocking 为 0：
   {py} {skill}/scripts/fact_check.py --article {workdir}/article.json \\
@@ -229,10 +253,19 @@ def main(argv: list[str] | None = None) -> int:
     if art.exists():
         try:
             a = json.loads(art.read_text(encoding="utf-8"))
-            sections = [b for b in a.get("blocks", []) if b.get("type") == "section"]
+            # Support both old (sections[]) and new (blocks[]) structure
+            if "sections" in a:
+                # Old structure
+                sections = a.get("sections", [])
+                imgs = sum(1 for s in sections for b in s.get("blocks", [])
+                          if b.get("type") == "img")
+            else:
+                # New structure
+                sections = [b for b in a.get("blocks", []) if b.get("type") == "section"]
+                imgs = sum(1 for b in a.get("blocks", []) if "img" in b)
+            
             if len(sections) != 6:
                 problems.append(f"章节数 {len(sections)}，应为 6")
-            imgs = sum(1 for b in a.get("blocks", []) if "img" in b)
             if imgs != 4:
                 problems.append(f"图片位 {imgs} 个，应为 4")
         except Exception as exc:  # noqa: BLE001
